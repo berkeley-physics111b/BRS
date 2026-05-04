@@ -153,6 +153,7 @@ class ScopeSettingsFrame(tk.LabelFrame):
         self.edge         = tk.StringVar(value="Rise")
         self.sample_freq  = tk.DoubleVar(value=1e8)
         self.y_range      = tk.DoubleVar(value=0.1)
+        self.y_offset       = tk.DoubleVar(value=0.0)
         self.time_base_us = tk.DoubleVar(value=0.1)
         self.probe_invert = tk.BooleanVar(value=True)
         self.channel      = tk.IntVar(value=0)
@@ -180,6 +181,10 @@ class ScopeSettingsFrame(tk.LabelFrame):
         _ef(self, self.y_range, col=1, row=r, width=8)
 
         r += 1
+        _lf(self, "Vertical Offset (V):", col=0, row=r)
+        _ef(self, self.y_offset, col=1, row=r, width=8)
+
+        r += 1
         _lf(self, "Time Base (μs):", col=0, row=r)
         _ef(self, self.time_base_us, col=1, row=r, width=8)
 
@@ -201,6 +206,7 @@ class ScopeSettingsFrame(tk.LabelFrame):
             slope         = slope,
             sample_rate   = fs,
             y_range       = self.y_range.get(),
+            y_offset      = self.y_offset.get(),
             time_base_us  = self.time_base_us.get(),
             buffer_size   = buffer_size,
             invert        = self.probe_invert.get(),
@@ -512,6 +518,8 @@ class ScopeViewerTab(tk.Frame):
                         buffer_size      = p["buffer_size"],
                         trigger_level_v  = trigger_level,
                         trigger_condition= trigger_slope,
+                        y_range          = p["y_range"],
+                        y_offset         = p["y_offset"],
                         auto_timeout_s   = 0.0, #might need to change to 0?
                         timeout_s        = 2.0,
                     )
