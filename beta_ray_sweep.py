@@ -503,11 +503,13 @@ class ScopeViewerTab(tk.Frame):
         p = self.scope_cfg.get_params()
         # User inputting settings assuming trigger on inverted data; modify analog_in_capture accordingly
         if p["invert"]:
-            trigger_slope = (p["slope"] + 1)%2
-            trigger_level = -p["trigger_level"]
+            #trigger_slope = (p["slope"] + 1)%2
+            #trigger_level = -p["trigger_level"]
+            attenuation = -1
         else:
-            trigger_slope = p["slope"]
-            trigger_level = p["trigger_level"]
+            #trigger_slope = p["slope"]
+            #trigger_level = p["trigger_level"]
+            attenuation = 1
         try:
             with WaveFormsADS() as dev:
                 dev.analog_in_set_range(p["channel"], p["y_range"])
@@ -516,15 +518,16 @@ class ScopeViewerTab(tk.Frame):
                         channel          = p["channel"],
                         sample_rate_hz   = p["sample_rate"],
                         buffer_size      = p["buffer_size"],
-                        trigger_level_v  = trigger_level,
-                        trigger_condition= trigger_slope,
+                        trigger_level_v  = p["trigger_level"],
+                        trigger_condition= p["slope"],
                         y_range          = p["y_range"],
                         y_offset         = p["y_offset"],
+                        attenuation      = attenuation,
                         auto_timeout_s   = 0.0, #might need to change to 0?
                         timeout_s        = 2.0,
                     )
-                    if p["invert"]:
-                        data = -data
+                    #if p["invert"]:
+                    #    data = -data
                     ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
                     self._q.put(("trace", ts, data))
         except Exception as e:
@@ -839,11 +842,13 @@ class CountRateTimeTab(tk.Frame):
         integ    = self.integ_time.get()
         t_start  = time.time()
         if p["invert"]:
-            trigger_slope = (p["slope"] + 1)%2
-            trigger_level = -p["trigger_level"]
+            #trigger_slope = (p["slope"] + 1)%2
+            #trigger_level = -p["trigger_level"]
+            attenuation = -1
         else:
-            trigger_slope = p["slope"]
-            trigger_level = p["trigger_level"]
+            #trigger_slope = p["slope"]
+            #trigger_level = p["trigger_level"]
+            attenuation = 1
         try:
             with WaveFormsADS() as dev:
                 dev.analog_in_set_range(p["channel"], p["y_range"])
@@ -857,13 +862,16 @@ class CountRateTimeTab(tk.Frame):
                                 channel             = p["channel"],
                                 sample_rate_hz      = p["sample_rate"],
                                 buffer_size         = p["buffer_size"],
-                                trigger_level_v     = trigger_level,
-                                trigger_condition   = trigger_slope,
+                                trigger_level_v     = p["trigger_level"],
+                                trigger_condition   = p["slope"],
+                                y_range             = p["y_range"],
+                                y_offset            = p["y_offset"],
+                                attenuation         = attenuation,
                                 auto_timeout_s      = 0.0,
                                 timeout_s           = max(integ * 2, 1.0),
                             )
-                            if p["invert"]:
-                                data = -data
+                            #if p["invert"]:
+                            #    data = -data
                             count      += 1
                             last_trace  = data
                         except Exception:
@@ -1166,11 +1174,13 @@ class CountRateCurrentTab(tk.Frame):
                 with WaveFormsADS() as dev:
                     dev.analog_in_set_range(p["channel"], p["y_range"])
                     if p["invert"]:
-                        trigger_slope = (p["slope"] + 1)%2
-                        trigger_level = -p["trigger_level"]
+                        #trigger_slope = (p["slope"] + 1)%2
+                        #trigger_level = -p["trigger_level"]
+                        attenuation = -1.0
                     else:
-                        trigger_slope = p["slope"]
-                        trigger_level = p["trigger_level"]
+                        #trigger_slope = p["slope"]
+                        #trigger_level = p["trigger_level"]
+                        attenuation = 1.0
 
                     for idx, current in enumerate(currents):
                         if not self._running:
@@ -1187,8 +1197,11 @@ class CountRateCurrentTab(tk.Frame):
                                     channel             = p["channel"],
                                     sample_rate_hz      = p["sample_rate"],
                                     buffer_size         = p["buffer_size"],
-                                    trigger_level_v     = trigger_level,
-                                    trigger_condition   = trigger_slope,
+                                    trigger_level_v     = p["trigger_level"],
+                                    trigger_condition   = p["slope"],
+                                    y_offset            = p["offset_y"],
+                                    y_range             = p["y_range"],
+                                    attenuation         = attenuation,
                                     auto_timeout_s      = 0.0,
                                     timeout_s           = max(integ * 2, 1.0),
                                 )
