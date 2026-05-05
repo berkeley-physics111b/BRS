@@ -1021,7 +1021,7 @@ class CountRateCurrentTab(tk.Frame):
 
                     # --- Degauss ---
                     self._q.put(("status", "Degaussing…"))
-                    self._degauss(ads=dev, power_supply=ch, relay_ch=0)
+                    self._degauss(ads=dev, power_supply_ch=ch, relay_ch=0)
 
                     for scan_idx in range(n_scans):
                         if not self._running: break
