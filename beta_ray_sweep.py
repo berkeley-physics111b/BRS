@@ -921,9 +921,9 @@ class CountRateCurrentTab(tk.Frame):
         SETTLE_TIME = 5
 
         # Reverse current direction
-        self.ads.analog_out_reset()
-        self.ads.analog_out_enable_node(channel=relay_ch)
-        self.ads.analog_out_set_dc(channel=relay_ch, voltage_v=NEG_CURRENT_RELAY_VOLTAGE)
+        ads.analog_out_reset()
+        ads.analog_out_enable_node(channel=relay_ch)
+        ads.analog_out_set_dc(channel=relay_ch, voltage_v=NEG_CURRENT_RELAY_VOLTAGE)
         
         # Set to max neg current, wait for current to settle
         power_supply_ch.set_current(0.6)
@@ -934,7 +934,7 @@ class CountRateCurrentTab(tk.Frame):
         time.sleep(SETTLE_TIME)
 
         # Set current direction back to positive
-        self.ads.analog_out_set_dc(channel=relay_ch, voltage_v=POS_CURRENT_RELAY_VOLTAGE)
+        ads.analog_out_set_dc(channel=relay_ch, voltage_v=POS_CURRENT_RELAY_VOLTAGE)
 
     def _toggle_csv_path(self):
         self._csv_entry.config(state="normal" if self.save_csv.get() else "disabled")
