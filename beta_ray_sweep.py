@@ -909,13 +909,32 @@ class CountRateCurrentTab(tk.Frame):
         """Placeholder – connect to hardware polarity-flip logic here."""
         pass
 
-    def _degauss(self, ch):
+    def _degauss(self, ads, power_supply_ch, relay_ch=0):
         """
         Called once before the first scan begins.
-        Fill in demagnetisation / degaussing logic here.
-        ch – PSU channel object with .set_current() / .set_output().
+        ads - ads object with .analog_out_set_dc().
+        power_supply_ch – PSU channel object with .set_current() / .set_output().
+        relay_ch - ads analog output channel object. Defaults to 0.
         """
-        pass
+        NEG_CURRENT_RELAY_VOLTAGE = 5.0
+        POS_CURRENT_RELAY_VOLTAGE = 0.0
+        SETTLE_TIME = 5
+
+        # Reverse current direction
+        self.ads.analog_out_reset()
+        self.ads.analog_out_enable_node(channel=relay_ch)
+        self.ads.analog_out_set_dc(channel=relay_ch, voltage_v=NEG_CURRENT_RELAY_VOLTAGE)
+        
+        # Set to max neg current, wait for current to settle
+        power_supply_ch.set_current(0.6)
+        time.sleep(SETTLE_TIME)
+
+        # Set current to zero, wait for current to settle
+        power_supply_ch.set_current(0)
+        time.sleep(SETTLE_TIME)
+
+        # Set current direction back to positive
+        self.ads.analog_out_set_dc(channel=relay_ch, voltage_v=POS_CURRENT_RELAY_VOLTAGE)
 
     def _toggle_csv_path(self):
         self._csv_entry.config(state="normal" if self.save_csv.get() else "disabled")
@@ -996,13 +1015,13 @@ class CountRateCurrentTab(tk.Frame):
                 ch = getattr(psu, self.psu_ch.get())
                 ch.set_output(True)
 
-                # --- Degauss ---
-                self._q.put(("status", "Degaussing…"))
-                self._degauss(ch)
-
                 with WaveFormsADS() as dev:
                     dev.analog_in_set_range(p["channel"], p["y_range"])
                     steps_done = 0
+
+                    # --- Degauss ---
+                    self._q.put(("status", "Degaussing…"))
+                    self._degauss(ads=dev, power_supply=ch, relay_ch=0)
 
                     for scan_idx in range(n_scans):
                         if not self._running: break
