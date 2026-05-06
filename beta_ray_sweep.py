@@ -61,6 +61,15 @@ except Exception as e:
     print("Power supply E3633A package connection error:", e)
     HAS_PSU_KEYSIGHT = False
 
+try:
+    from temp_monitor import TempMonitor
+    HAS_DMM = True
+except Exception as e:
+    print("DMM temperature monitor connection error:", e)
+    HAS_DMM = False
+
+TEMP_LIMIT_C = 80.0   # Emergency-stop threshold
+
 
 # ---------------------------------------------------------------------------
 # Palette / style constants
@@ -602,6 +611,160 @@ class WavegenControlTab(tk.Frame):
 
 
 # ===========================================================================
+# TAB 4.5 – Multimeter Readout  (voltage, current, temperature)
+# ===========================================================================
+
+class MultimeterReadoutTab(tk.Frame):
+    """
+    Connects to two Keysight 2110 DMMs via pyvisa (through TempMonitor).
+    Polls voltage, current, and derived temperature every few seconds.
+    """
+    POLL_INTERVAL_MS = 3000   # ms between auto-polls
+
+    def __init__(self, parent):
+        super().__init__(parent, bg=BG)
+        self._monitor   = None
+        self._poll_id   = None
+        self._status    = tk.StringVar(value="Not connected")
+        self._volt_var  = tk.StringVar(value="—")
+        self._curr_var  = tk.StringVar(value="—")
+        self._temp_var  = tk.StringVar(value="—")
+        self._temp_lbl  = None   # coloured label widget, set in _build
+        self._build()
+
+    def _build(self):
+        pad = dict(padx=PADX, pady=PADY)
+
+        # ---- Connection ----
+        conn = tk.LabelFrame(self, text="DMM Connection", bg=PANEL, fg=ACCENT, font=SANS_B)
+        conn.pack(fill="x", padx=10, pady=8)
+
+        self._ammeter_var  = tk.StringVar(value="USB0::0x05E6::0x2110::1373999::INSTR")
+        self._voltmeter_var= tk.StringVar(value="USB0::0x05E6::0x2110::1415286::INSTR")
+
+        tk.Label(conn, text="Ammeter VISA:", bg=PANEL, fg=FG, font=SANS).grid(
+            column=0, row=0, **pad, sticky="e")
+        tk.Entry(conn, textvariable=self._ammeter_var, width=38,
+                 bg=ENTRY_BG, fg=FG, insertbackground=FG, font=MONO).grid(
+            column=1, row=0, **pad, sticky="ew", columnspan=2)
+
+        tk.Label(conn, text="Voltmeter VISA:", bg=PANEL, fg=FG, font=SANS).grid(
+            column=0, row=1, **pad, sticky="e")
+        tk.Entry(conn, textvariable=self._voltmeter_var, width=38,
+                 bg=ENTRY_BG, fg=FG, insertbackground=FG, font=MONO).grid(
+            column=1, row=1, **pad, sticky="ew", columnspan=2)
+
+        btn_row = tk.Frame(conn, bg=PANEL)
+        btn_row.grid(column=0, row=2, columnspan=3, **pad, sticky="w")
+        tk.Button(btn_row, text="Connect",    command=self._connect,
+                  bg=GREEN, fg=BG, font=SANS_B, padx=10, pady=4,
+                  relief="flat").pack(side="left", padx=6)
+        tk.Button(btn_row, text="Disconnect", command=self._disconnect,
+                  bg=RED, fg=BG, font=SANS_B, padx=10, pady=4,
+                  relief="flat").pack(side="left", padx=6)
+
+        self._poll_iv = tk.IntVar(value=self.POLL_INTERVAL_MS // 1000)
+        tk.Label(btn_row, text="  Poll interval (s):", bg=PANEL, fg=FG,
+                 font=SANS).pack(side="left", padx=(12, 2))
+        tk.Entry(btn_row, textvariable=self._poll_iv, width=4,
+                 bg=ENTRY_BG, fg=FG, insertbackground=FG, font=MONO).pack(side="left")
+
+        # ---- Readout panel ----
+        rdout = tk.LabelFrame(self, text="Live Readings", bg=PANEL, fg=ACCENT, font=SANS_B)
+        rdout.pack(fill="x", padx=10, pady=8)
+
+        BIG = ("Courier", 26, "bold")
+        MED = ("Helvetica", 11)
+
+        def _row(parent, label, var, row, color=GREEN, unit=""):
+            tk.Label(parent, text=label, bg=PANEL, fg=FG, font=MED).grid(
+                column=0, row=row, sticky="e", padx=PADX, pady=8)
+            lbl = tk.Label(parent, textvariable=var, bg=PANEL,
+                           fg=color, font=BIG, anchor="w")
+            lbl.grid(column=1, row=row, sticky="w", padx=PADX, pady=8)
+            tk.Label(parent, text=unit, bg=PANEL, fg=FG, font=MED).grid(
+                column=2, row=row, sticky="w")
+            return lbl
+
+        _row(rdout, "Voltage:",     self._volt_var, 0, GREEN,  "V")
+        _row(rdout, "Current:",     self._curr_var, 1, GREEN,  "A")
+        self._temp_lbl = _row(rdout, "Temperature:", self._temp_var, 2, GREEN, "°C")
+
+        _btn(rdout, "Poll once", self._poll_once, col=0, row=3, colspan=3)
+
+        _status_bar(self, self._status)
+
+    # ---- Connection ----
+    def _connect(self):
+        if not HAS_DMM:
+            messagebox.showerror("Error", "temp_monitor module not available."); return
+        try:
+            self._monitor = TempMonitor(
+                ammeter  = self._ammeter_var.get().strip(),
+                voltmeter= self._voltmeter_var.get().strip(),
+            )
+            self._status.set("Connected — polling every "
+                             f"{self._poll_iv.get()} s")
+            self._schedule_poll()
+        except Exception as e:
+            messagebox.showerror("Connection Error", str(e))
+
+    def _disconnect(self):
+        self._cancel_poll()
+        if self._monitor:
+            try:
+                self._monitor.ammeter.close()
+                self._monitor.voltmeter.close()
+            except Exception: pass
+            self._monitor = None
+        self._status.set("Disconnected")
+        self._volt_var.set("—"); self._curr_var.set("—"); self._temp_var.set("—")
+        if self._temp_lbl: self._temp_lbl.config(fg=GREEN)
+
+    def _cancel_poll(self):
+        if self._poll_id:
+            self.after_cancel(self._poll_id); self._poll_id = None
+
+    def _schedule_poll(self):
+        interval_ms = max(500, self._poll_iv.get() * 1000)
+        self._poll_id = self.after(interval_ms, self._auto_poll)
+
+    def _auto_poll(self):
+        self._poll_once()
+        self._schedule_poll()   # reschedule
+
+    def _poll_once(self):
+        if not self._monitor:
+            messagebox.showerror("Error", "Not connected to DMMs."); return
+        # Run in background so we don't freeze the GUI during slow VISA queries
+        threading.Thread(target=self._do_poll_thread, daemon=True).start()
+
+    def _do_poll_thread(self):
+        try:
+            v = self._monitor.measure_voltage()
+            i = self._monitor.measure_current()
+            t = self._monitor.measure_temperature()
+            self.after(0, lambda: self._update_display(v, i, t))
+        except Exception as e:
+            self.after(0, lambda: self._status.set(f"Poll error: {e}"))
+
+    def _update_display(self, v, i, t):
+        self._volt_var.set(f"{v:.6f}")
+        self._curr_var.set(f"{i:.6f}")
+        self._temp_var.set(f"{t:.2f}")
+        # Colour the temperature red if approaching the safety limit
+        if t >= TEMP_LIMIT_C:
+            self._temp_lbl.config(fg=RED)
+        elif t >= TEMP_LIMIT_C - 10:
+            self._temp_lbl.config(fg=YELLOW)
+        else:
+            self._temp_lbl.config(fg=GREEN)
+        self._status.set(
+            f"Last poll: {datetime.datetime.now().strftime('%H:%M:%S')}  "
+            f"| T={t:.1f}°C  V={v:.4f}V  I={i:.4f}A")
+
+
+# ===========================================================================
 # TAB 5 – Count-Rate vs Time
 # ===========================================================================
 
@@ -740,20 +903,25 @@ class CountRateTimeTab(tk.Frame):
 
 
 # ===========================================================================
-# TAB 6 – Count-Rate vs Current
+
+# ===========================================================================
+# TAB 6 – Count-Rate vs Current  (full rewrite)
 # ===========================================================================
 
 class CountRateCurrentTab(tk.Frame):
     """
     Sweeps current i_start → i_stop (UP) then i_stop → i_start (DOWN),
-    repeated N times.  Shows:
-      • Latest up scan
-      • Sum of all up scans so far
-      • Latest down scan
-      • Sum of all down scans so far
-      • Hysteresis: latest up and down overlaid on one plot
-    Degauss stub is called before the first scan.
-    Settling time is read from the entry box directly.
+    repeated N times.
+
+    Features:
+      • X-axis uses actual current read from DMM, not the commanded value
+      • Live temperature display; E-stop if T > TEMP_LIMIT_C mid-settle
+      • Each plot updates point-by-point as the scan progresses
+      • Per-pulse metrics (max, FWHM, noise floor avg, timestamp) saved to a
+        separate CSV; written in a batch at the end of each integration window
+        so no data is lost due to capture deadtime
+      • Main CSV: scan / direction / measured_current / counts / temperature / ts
+      • Degauss stub called before first scan
     """
 
     def __init__(self, parent):
@@ -763,17 +931,22 @@ class CountRateCurrentTab(tk.Frame):
         self._q          = queue.Queue()
         self._csv_file   = None
         self._csv_writer = None
+        self._pulse_csv_file   = None
+        self._pulse_csv_writer = None
         self._status     = tk.StringVar(value="Idle")
         self._scan_status= tk.StringVar(value="—")
         self._elapsed    = tk.StringVar(value="—")
         self._eta        = tk.StringVar(value="—")
+        self._temp_disp  = tk.StringVar(value="—")
+        self._curr_disp  = tk.StringVar(value="—")
         self._t_start    = None
 
-        self._last_up    = []     # [(current, count), ...]
+        # Accumulated data – keyed by direction
+        self._last_up    = []     # [(meas_current, count), ...]  current scan
         self._last_down  = []
-        self._sum_up     = None   # np.ndarray
+        self._sum_up     = None   # np.ndarray of summed counts
         self._sum_down   = None
-        self._cur_up     = None   # current axis arrays
+        self._cur_up     = None   # current axes matching sum arrays
         self._cur_down   = None
 
         self._build()
@@ -784,7 +957,7 @@ class CountRateCurrentTab(tk.Frame):
     # ------------------------------------------------------------------
 
     def _build(self):
-        # ---- LEFT: scrollable settings ----
+        # ---- LEFT: scrollable settings panel ----
         left_sf = ScrollableFrame(self, bg=BG, width=315)
         left_sf.pack(side="left", fill="y")
         inn = left_sf.inner
@@ -806,6 +979,11 @@ class CountRateCurrentTab(tk.Frame):
         self.flip_curr     = tk.BooleanVar(value=False)
         self.save_csv      = tk.BooleanVar(value=False)
         self.csv_path      = tk.StringVar(value="")
+        self.save_pulse_csv = tk.BooleanVar(value=False)
+        self.pulse_csv_path = tk.StringVar(value="")
+        # DMM VISA strings (same defaults as MultimeterReadoutTab)
+        self.dmm_ammeter   = tk.StringVar(value="USB0::0x05E6::0x2110::1373999::INSTR")
+        self.dmm_voltmeter = tk.StringVar(value="USB0::0x05E6::0x2110::1415286::INSTR")
 
         r = 0
         _lf(sweep, "PSU Channel:", col=0, row=r)
@@ -819,6 +997,14 @@ class CountRateCurrentTab(tk.Frame):
         r += 1; _lf(sweep, "Settling Time (s):",    col=0, row=r); _ef(sweep, self.settling_time, col=1, row=r)
         r += 1; _lf(sweep, "Number of scans (N):",  col=0, row=r); _ef(sweep, self.n_scans,       col=1, row=r)
 
+        # DMM VISA addresses
+        r += 1
+        _lf(sweep, "Ammeter VISA:", col=0, row=r)
+        _ef(sweep, self.dmm_ammeter, col=1, row=r, width=28)
+        r += 1
+        _lf(sweep, "Voltmeter VISA:", col=0, row=r)
+        _ef(sweep, self.dmm_voltmeter, col=1, row=r, width=28)
+
         r += 1
         tk.Checkbutton(sweep, text="Flip Current Direction",
                        variable=self.flip_curr, command=self._on_flip_current,
@@ -827,12 +1013,11 @@ class CountRateCurrentTab(tk.Frame):
             column=0, row=r, columnspan=2, sticky="w", padx=PADX, pady=PADY)
 
         r += 1
-        tk.Checkbutton(sweep, text="Save to CSV", variable=self.save_csv,
+        tk.Checkbutton(sweep, text="Save counts CSV", variable=self.save_csv,
                        command=self._toggle_csv_path,
                        bg=PANEL, fg=FG, selectcolor=ENTRY_BG,
                        activebackground=PANEL, font=SANS).grid(
             column=0, row=r, columnspan=2, sticky="w", padx=PADX, pady=PADY)
-
         r += 1
         self._csv_entry = tk.Entry(sweep, textvariable=self.csv_path, width=16,
                                    bg=ENTRY_BG, fg=FG, insertbackground=FG,
@@ -840,21 +1025,50 @@ class CountRateCurrentTab(tk.Frame):
         self._csv_entry.grid(column=0, row=r, columnspan=2, sticky="ew", padx=PADX, pady=PADY)
         _btn(sweep, "Browse…", self._browse_csv, col=2, row=r)
 
+        r += 1
+        tk.Checkbutton(sweep, text="Save pulse metrics CSV", variable=self.save_pulse_csv,
+                       command=self._toggle_pulse_csv_path,
+                       bg=PANEL, fg=FG, selectcolor=ENTRY_BG,
+                       activebackground=PANEL, font=SANS).grid(
+            column=0, row=r, columnspan=2, sticky="w", padx=PADX, pady=PADY)
+        r += 1
+        self._pulse_csv_entry = tk.Entry(sweep, textvariable=self.pulse_csv_path, width=16,
+                                         bg=ENTRY_BG, fg=FG, insertbackground=FG,
+                                         font=MONO, state="disabled")
+        self._pulse_csv_entry.grid(column=0, row=r, columnspan=2, sticky="ew", padx=PADX, pady=PADY)
+        _btn(sweep, "Browse…", self._browse_pulse_csv, col=2, row=r)
+
+        # ---- Live readouts ----
+        live = tk.LabelFrame(inn, text="Live Hardware Readings", bg=PANEL, fg=ACCENT, font=SANS_B)
+        live.pack(fill="x", padx=2, pady=4)
+
+        tk.Label(live, text="Temperature:", bg=PANEL, fg=FG, font=SANS).grid(
+            column=0, row=0, sticky="e", padx=PADX, pady=2)
+        self._temp_lbl = tk.Label(live, textvariable=self._temp_disp,
+                                  bg=PANEL, fg=GREEN, font=("Courier", 13, "bold"))
+        self._temp_lbl.grid(column=1, row=0, sticky="w", padx=PADX)
+        tk.Label(live, text="°C", bg=PANEL, fg=FG, font=SANS).grid(column=2, row=0, sticky="w")
+
+        tk.Label(live, text="Measured Current:", bg=PANEL, fg=FG, font=SANS).grid(
+            column=0, row=1, sticky="e", padx=PADX, pady=2)
+        tk.Label(live, textvariable=self._curr_disp,
+                 bg=PANEL, fg=ACCENT, font=("Courier", 13, "bold")).grid(
+            column=1, row=1, sticky="w", padx=PADX)
+        tk.Label(live, text="A", bg=PANEL, fg=FG, font=SANS).grid(column=2, row=1, sticky="w")
+
         # ---- Progress box ----
         prog = tk.LabelFrame(inn, text="Scan Progress", bg=PANEL, fg=ACCENT, font=SANS_B)
         prog.pack(fill="x", padx=2, pady=4)
 
         tk.Label(prog, text="State:", bg=PANEL, fg=FG, font=SANS).grid(
-            column=0, row=0, sticky="e", padx=PADX, pady=2)
+            column=0, row=0, sticky="ne", padx=PADX, pady=2)
         tk.Label(prog, textvariable=self._scan_status, bg=PANEL, fg=ACCENT,
                  font=SANS_B, anchor="w", wraplength=180, justify="left").grid(
             column=1, row=0, sticky="w", padx=PADX, pady=2)
-
         tk.Label(prog, text="Elapsed:", bg=PANEL, fg=FG, font=SANS).grid(
             column=0, row=1, sticky="e", padx=PADX, pady=2)
         tk.Label(prog, textvariable=self._elapsed, bg=PANEL, fg=GREEN,
                  font=MONO).grid(column=1, row=1, sticky="w", padx=PADX, pady=2)
-
         tk.Label(prog, text="Est. Remaining:", bg=PANEL, fg=FG, font=SANS).grid(
             column=0, row=2, sticky="e", padx=PADX, pady=2)
         tk.Label(prog, textvariable=self._eta, bg=PANEL, fg=YELLOW,
@@ -866,9 +1080,8 @@ class CountRateCurrentTab(tk.Frame):
         tk.Button(btn_row, text="Stop",  command=self._stop,  bg=RED,   fg=BG, font=SANS_B, padx=10, pady=4, relief="flat").pack(side="left", padx=6)
         tk.Button(btn_row, text="Clear", command=self._clear, bg=BUTTON_BG, fg=FG, font=SANS_B, padx=10, pady=4, relief="flat").pack(side="left", padx=6)
 
-        # small status inside scrollable panel
         tk.Label(inn, textvariable=self._status, bg=BG, fg=YELLOW,
-                 font=MONO, anchor="w").pack(fill="x", padx=4, pady=2)
+                 font=MONO, anchor="w", wraplength=290).pack(fill="x", padx=4, pady=2)
 
         # ---- RIGHT: scrollable plot panel ----
         right_sf = ScrollableFrame(self, bg=BG, width=760)
@@ -884,7 +1097,6 @@ class CountRateCurrentTab(tk.Frame):
         self._fig = Figure(figsize=(6.5, 15), facecolor=BG)
         self._fig.subplots_adjust(hspace=0.42, top=0.97, bottom=0.03,
                                   left=0.13, right=0.97)
-
         axes = self._fig.subplots(5, 1)
         (self._ax_up_last, self._ax_up_sum,
          self._ax_dn_last, self._ax_dn_sum,
@@ -912,38 +1124,41 @@ class CountRateCurrentTab(tk.Frame):
     def _degauss(self, ads, power_supply_ch, relay_ch=0):
         """
         Called once before the first scan begins.
-        ads - ads object with .analog_out_set_dc().
-        power_supply_ch – PSU channel object with .set_current() / .set_output().
-        relay_ch - ads analog output channel object. Defaults to 0.
+        ads                – WaveFormsADS object.
+        power_supply_ch    – PSU channel with .set_current() / .set_output().
+        relay_ch           – ADS analog-out channel used for polarity relay.
         """
-        NEG_CURRENT_RELAY_VOLTAGE = 5.0
-        POS_CURRENT_RELAY_VOLTAGE = 0.0
-        SETTLE_TIME = 5
+        NEG_RELAY_V = 5.0
+        POS_RELAY_V = 0.0
+        SETTLE      = 5
 
-        # Reverse current direction
         ads.analog_out_reset()
         ads.analog_out_enable_node(channel=relay_ch)
-        ads.analog_out_set_dc(channel=relay_ch, voltage_v=NEG_CURRENT_RELAY_VOLTAGE)
-        
-        # Set to max neg current, wait for current to settle
+        ads.analog_out_set_dc(channel=relay_ch, voltage_v=NEG_RELAY_V)
         power_supply_ch.set_current(0.6)
-        time.sleep(SETTLE_TIME)
-
-        # Set current to zero, wait for current to settle
+        time.sleep(SETTLE)
         power_supply_ch.set_current(0)
-        time.sleep(SETTLE_TIME)
-
-        # Set current direction back to positive
-        ads.analog_out_set_dc(channel=relay_ch, voltage_v=POS_CURRENT_RELAY_VOLTAGE)
+        time.sleep(SETTLE)
+        ads.analog_out_set_dc(channel=relay_ch, voltage_v=POS_RELAY_V)
 
     def _toggle_csv_path(self):
         self._csv_entry.config(state="normal" if self.save_csv.get() else "disabled")
 
+    def _toggle_pulse_csv_path(self):
+        self._pulse_csv_entry.config(
+            state="normal" if self.save_pulse_csv.get() else "disabled")
+
     def _browse_csv(self):
         path = filedialog.asksaveasfilename(defaultextension=".csv",
             filetypes=[("CSV files", "*.csv"), ("All", "*.*")],
-            title="Save Current-Sweep CSV")
+            title="Save counts CSV")
         if path: self.csv_path.set(path)
+
+    def _browse_pulse_csv(self):
+        path = filedialog.asksaveasfilename(defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All", "*.*")],
+            title="Save pulse-metrics CSV")
+        if path: self.pulse_csv_path.set(path)
 
     @staticmethod
     def _fmt_time(secs):
@@ -962,20 +1177,51 @@ class CountRateCurrentTab(tk.Frame):
             currents.append(round(v, 10)); v += step
         return currents
 
+    @staticmethod
+    def _pulse_metrics(trace: np.ndarray):
+        """
+        Return (peak_max, fwhm_samples, noise_floor_avg) for one triggered trace.
+        noise_floor_avg = mean of the first 10% of samples (pre-trigger baseline).
+        FWHM computed on the absolute waveform above half-max.
+        """
+        n       = len(trace)
+        baseline= float(np.mean(trace[:max(1, n // 10)]))
+        shifted = trace - baseline
+        peak    = float(np.max(np.abs(shifted)))
+        half    = peak / 2.0
+        above   = np.abs(shifted) >= half
+        # FWHM: number of samples where |shifted| >= half-max
+        fwhm    = int(np.sum(above))
+        return peak, fwhm, baseline
+
     # ------------------------------------------------------------------
     # Start / Stop / Clear
     # ------------------------------------------------------------------
 
     def _start(self):
         if self._running: return
-        if not HAS_ADS:  messagebox.showerror("Error", "waveforms_ads not available."); return
-        if not HAS_PSU:  messagebox.showerror("Error", "Power supply module not available."); return
+        if not HAS_ADS: messagebox.showerror("Error", "waveforms_ads not available."); return
+        if not HAS_PSU: messagebox.showerror("Error", "Power supply module not available."); return
+        if not HAS_DMM: messagebox.showerror("Error", "temp_monitor (DMM) not available."); return
+
         if self.save_csv.get():
             path = self.csv_path.get().strip()
-            if not path: messagebox.showerror("Error", "Choose a CSV path first."); return
+            if not path: messagebox.showerror("Error", "Choose a counts CSV path first."); return
             self._csv_file   = open(path, "w", newline="")
             self._csv_writer = csv.writer(self._csv_file)
-            self._csv_writer.writerow(["Scan", "Direction", "Current_A", "Counts", "Timestamp"])
+            self._csv_writer.writerow(
+                ["Scan", "Direction", "Measured_Current_A",
+                 "Counts", "Temperature_C", "Timestamp"])
+
+        if self.save_pulse_csv.get():
+            path = self.pulse_csv_path.get().strip()
+            if not path: messagebox.showerror("Error", "Choose a pulse-metrics CSV path first."); return
+            self._pulse_csv_file   = open(path, "w", newline="")
+            self._pulse_csv_writer = csv.writer(self._pulse_csv_file)
+            self._pulse_csv_writer.writerow(
+                ["Scan", "Direction", "Measured_Current_A",
+                 "Pulse_Timestamp", "Peak_V", "FWHM_samples", "Noise_Floor_V"])
+
         self._running = True; self._t_start = time.time()
         self._status.set("Running…")
         self._thread = threading.Thread(target=self._sweep_loop, daemon=True)
@@ -983,8 +1229,20 @@ class CountRateCurrentTab(tk.Frame):
 
     def _stop(self):
         self._running = False
-        if self._csv_file: self._csv_file.close(); self._csv_file = self._csv_writer = None
+        for f in (self._csv_file, self._pulse_csv_file):
+            if f:
+                try: f.close()
+                except Exception: pass
+        self._csv_file = self._csv_writer = None
+        self._pulse_csv_file = self._pulse_csv_writer = None
         self._status.set("Stopped"); self._scan_status.set("Stopped")
+
+    def _emergency_stop(self, ch, reason=""):
+        """Turn PSU off immediately and signal the main thread."""
+        try: ch.set_output(False)
+        except Exception: pass
+        self._running = False
+        self._q.put(("estop", reason))
 
     def _clear(self):
         self._last_up = []; self._last_down = []
@@ -999,7 +1257,7 @@ class CountRateCurrentTab(tk.Frame):
     def _sweep_loop(self):
         n_scans  = max(1, self.n_scans.get())
         integ    = self.integ_time.get()
-        settle   = self.settling_time.get()   # read directly from entry
+        settle   = self.settling_time.get()
         p        = self.scope_cfg.get_params()
         att      = -1 if p["invert"] else 1
 
@@ -1014,6 +1272,12 @@ class CountRateCurrentTab(tk.Frame):
             with psu_ctx as psu:
                 ch = getattr(psu, self.psu_ch.get())
                 ch.set_output(True)
+
+                # Open DMM for temperature and current readback
+                dmm = TempMonitor(
+                    ammeter  = self.dmm_ammeter.get().strip(),
+                    voltmeter= self.dmm_voltmeter.get().strip(),
+                )
 
                 with WaveFormsADS() as dev:
                     dev.analog_in_set_range(p["channel"], p["y_range"])
@@ -1031,27 +1295,58 @@ class CountRateCurrentTab(tk.Frame):
                             if not self._running: break
                             label = f"Scan {scan_idx+1}/{n_scans} – {direction}"
                             self._q.put(("status", label))
-                            scan_data = []
 
-                            for current in currents:
+                            for cmd_current in currents:
                                 if not self._running: break
-                                ch.set_current(current)
+                                ch.set_current(cmd_current)
 
+                                # ---- Settling phase with mid-point temp check ----
                                 if settle > 0:
+                                    half_settle = settle / 2.0
                                     self._q.put(("status",
-                                        f"{label} | Settling {settle:.1f} s  "
-                                        f"(I={current:.4f} A)"))
-                                    time.sleep(settle)
+                                        f"{label} | Settling {settle:.1f} s "
+                                        f"(cmd={cmd_current:.4f} A)"))
+                                    time.sleep(half_settle)
 
+                                    # Temperature check at midpoint
+                                    try:
+                                        t_check = dmm.measure_temperature()
+                                        t_spike = dmm.temp_spike
+                                        self._q.put(("temp_check", t_check))
+                                        if t_check > TEMP_LIMIT_C and not t_spike:
+                                            self._emergency_stop(ch,
+                                                f"TEMPERATURE LIMIT EXCEEDED: "
+                                                f"{t_check:.1f}°C > {TEMP_LIMIT_C}°C")
+                                            return
+                                    except Exception as e:
+                                        self._q.put(("status",
+                                            f"{label} | Temp check failed: {e}"))
+
+                                    time.sleep(half_settle)
+
+                                # ---- Read actual current from DMM ----
+                                try:
+                                    meas_current = dmm.measure_current()
+                                    meas_temp    = dmm.measure_temperature()
+                                except Exception:
+                                    meas_current = cmd_current   # fallback
+                                    meas_temp    = float("nan")
+
+                                self._q.put(("live", meas_current, meas_temp))
                                 self._q.put(("status",
-                                    f"{label} | Integrating {integ:.1f} s  "
-                                    f"(I={current:.4f} A)"))
+                                    f"{label} | Integrating {integ:.1f} s "
+                                    f"(I={meas_current:.4f} A, T={meas_temp:.1f}°C)"))
 
+                                # ---- Integration window ----
                                 count = 0
+                                # Pulse metrics accumulated during window;
+                                # written in batch afterwards to avoid deadtime
+                                pulse_batch = []   # [(ts, peak, fwhm, noise), ...]
                                 t_win = time.time()
+
                                 while time.time() - t_win < integ and self._running:
                                     try:
-                                        dev.analog_in_capture(
+                                        data = dev.analog_in_capture(
                                             channel=p["channel"],
                                             sample_rate_hz=p["sample_rate"],
                                             buffer_size=p["buffer_size"],
@@ -1063,7 +1358,23 @@ class CountRateCurrentTab(tk.Frame):
                                             auto_timeout_s=0.0,
                                             timeout_s=max(integ * 2, 1.0))
                                         count += 1
-                                    except Exception: pass
+                                        pulse_ts = datetime.datetime.now().strftime(
+                                            "%H:%M:%S.%f")[:-3]
+                                        peak, fwhm, noise = self._pulse_metrics(data)
+                                        pulse_batch.append(
+                                            (pulse_ts, peak, fwhm, noise))
+                                    except Exception:
+                                        pass
+
+                                # ---- Write pulse CSV batch ----
+                                if self._pulse_csv_writer and pulse_batch:
+                                    for pts, pk, fw, ns in pulse_batch:
+                                        self._pulse_csv_writer.writerow([
+                                            scan_idx + 1, direction,
+                                            f"{meas_current:.6f}",
+                                            pts, f"{pk:.6f}",
+                                            fw, f"{ns:.6f}"])
+                                    self._pulse_csv_file.flush()
 
                                 steps_done += 1
                                 elapsed = time.time() - self._t_start
@@ -1072,10 +1383,11 @@ class CountRateCurrentTab(tk.Frame):
                                     self._q.put(("eta", remain))
 
                                 ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                                scan_data.append((current, count))
-                                self._q.put(("point", direction, scan_idx, current, count, ts))
+                                self._q.put(("point", direction, scan_idx,
+                                             meas_current, count, meas_temp, ts))
 
-                            self._q.put(("scan_done", direction, scan_data))
+                            # Full half-scan done
+                            self._q.put(("scan_done", direction))
 
                 ch.set_output(False)
 
@@ -1097,38 +1409,83 @@ class CountRateCurrentTab(tk.Frame):
             if msg[0] == "status":
                 self._scan_status.set(msg[1])
 
+            elif msg[0] == "live":
+                _, meas_i, meas_t = msg
+                self._curr_disp.set(f"{meas_i:.5f}")
+                self._temp_disp.set(f"{meas_t:.2f}")
+                if meas_t >= TEMP_LIMIT_C:
+                    self._temp_lbl.config(fg=RED)
+                elif meas_t >= TEMP_LIMIT_C - 10:
+                    self._temp_lbl.config(fg=YELLOW)
+                else:
+                    self._temp_lbl.config(fg=GREEN)
+
+            elif msg[0] == "temp_check":
+                # Mid-settle temperature update
+                _, t = msg
+                self._temp_disp.set(f"{t:.2f}")
+                self._temp_lbl.config(fg=(RED if t >= TEMP_LIMIT_C
+                                         else YELLOW if t >= TEMP_LIMIT_C - 10
+                                         else GREEN))
+
             elif msg[0] == "point":
-                _, direction, scan_idx, current, count, ts = msg
+                _, direction, scan_idx, meas_i, count, meas_t, ts = msg
+
+                # Write counts CSV
                 if self._csv_writer:
                     self._csv_writer.writerow(
-                        [scan_idx + 1, direction, f"{current:.6f}", count, ts])
+                        [scan_idx + 1, direction, f"{meas_i:.6f}",
+                         count, f"{meas_t:.2f}", ts])
                     self._csv_file.flush()
+
                 self._status.set(
-                    f"{direction.upper()} | I={current:.4f} A → {count} counts")
+                    f"{direction.upper()} | I={meas_i:.4f} A "
+                    f"T={meas_t:.1f}°C → {count} counts")
+
+                # Append to live scan list and redraw immediately (point-by-point)
+                if direction == "up":
+                    self._last_up.append((meas_i, count))
+                else:
+                    self._last_down.append((meas_i, count))
+                redraw = True
 
             elif msg[0] == "scan_done":
-                _, direction, scan_data = msg
-                arr_i = np.array([d[0] for d in scan_data])
-                arr_c = np.array([d[1] for d in scan_data], dtype=float)
+                _, direction = msg
+                # Accumulate into sum arrays when a full half-scan completes
+                if direction == "up" and self._last_up:
+                    arr_i = np.array([d[0] for d in self._last_up])
+                    arr_c = np.array([d[1] for d in self._last_up], dtype=float)
+                    self._cur_up  = arr_i
+                    self._sum_up  = (arr_c.copy() if self._sum_up is None
+                                     or len(self._sum_up) != len(arr_c)
+                                     else self._sum_up + arr_c)
+                    self._last_up = []   # reset for next scan
 
-                if direction == "up":
-                    self._last_up = scan_data; self._cur_up = arr_i
-                    self._sum_up  = arr_c.copy() if (
-                        self._sum_up is None or len(self._sum_up) != len(arr_c)
-                    ) else self._sum_up + arr_c
-                else:
-                    self._last_down = scan_data; self._cur_down = arr_i
-                    self._sum_down  = arr_c.copy() if (
-                        self._sum_down is None or len(self._sum_down) != len(arr_c)
-                    ) else self._sum_down + arr_c
+                elif direction == "down" and self._last_down:
+                    arr_i = np.array([d[0] for d in self._last_down])
+                    arr_c = np.array([d[1] for d in self._last_down], dtype=float)
+                    self._cur_down  = arr_i
+                    self._sum_down  = (arr_c.copy() if self._sum_down is None
+                                       or len(self._sum_down) != len(arr_c)
+                                       else self._sum_down + arr_c)
+                    self._last_down = []
+
                 redraw = True
 
             elif msg[0] == "eta":
                 self._eta.set(self._fmt_time(msg[1]))
 
+            elif msg[0] == "estop":
+                _, reason = msg
+                self._status.set(f"EMERGENCY STOP: {reason}")
+                self._scan_status.set("⚠ STOPPED")
+                self._running = False
+                messagebox.showerror("Emergency Stop", reason)
+
             elif msg[0] == "error":
                 self._status.set(f"Error: {msg[1]}")
-                self._scan_status.set("Error"); self._running = False
+                self._scan_status.set("Error")
+                self._running = False
 
         if redraw:
             self._redraw()
@@ -1149,61 +1506,67 @@ class CountRateCurrentTab(tk.Frame):
     def _redraw(self):
         if not HAS_MPL: return
 
-        # Latest up
-        if self._last_up:
-            xs = np.array([d[0] for d in self._last_up])
-            ys = np.array([d[1] for d in self._last_up], dtype=float)
+        # ---- Latest up (may be in-progress) ----
+        up_data = self._last_up   # live accumulation during scan
+        if not up_data and self._sum_up is not None:
+            # scan_done was received – show nothing for "latest" until next scan starts
+            up_data = []
+        if up_data:
+            xs = np.array([d[0] for d in up_data])
+            ys = np.array([d[1] for d in up_data], dtype=float)
             self._plot_single(self._ax_up_last, xs, ys, ACCENT, "Latest Up Scan")
         else:
             self._plot_single(self._ax_up_last, None, None, ACCENT, "Latest Up Scan")
 
-        # Sum up
+        # ---- Sum up ----
         if self._sum_up is not None and self._cur_up is not None:
             self._plot_single(self._ax_up_sum, self._cur_up, self._sum_up,
                               GREEN, "Sum – Up Scans")
         else:
             self._plot_single(self._ax_up_sum, None, None, GREEN, "Sum – Up Scans")
 
-        # Latest down
-        if self._last_down:
-            xs = np.array([d[0] for d in self._last_down])
-            ys = np.array([d[1] for d in self._last_down], dtype=float)
+        # ---- Latest down (may be in-progress) ----
+        dn_data = self._last_down
+        if dn_data:
+            xs = np.array([d[0] for d in dn_data])
+            ys = np.array([d[1] for d in dn_data], dtype=float)
             self._plot_single(self._ax_dn_last, xs, ys, PURPLE, "Latest Down Scan")
         else:
             self._plot_single(self._ax_dn_last, None, None, PURPLE, "Latest Down Scan")
 
-        # Sum down
+        # ---- Sum down ----
         if self._sum_down is not None and self._cur_down is not None:
             self._plot_single(self._ax_dn_sum, self._cur_down, self._sum_down,
                               YELLOW, "Sum – Down Scans")
         else:
             self._plot_single(self._ax_dn_sum, None, None, YELLOW, "Sum – Down Scans")
 
-        # Hysteresis
+        # ---- Hysteresis: last completed up + last completed down ----
         self._ax_hyst.clear()
         _ax_style(self._ax_hyst, "Current (A)", "Counts", "Hysteresis (Up vs Down)")
         handles = []
-        if self._last_up:
-            xs = np.array([d[0] for d in self._last_up])
-            ys = np.array([d[1] for d in self._last_up], dtype=float)
-            l, = self._ax_hyst.plot(xs, ys, color=ACCENT, linewidth=1.5,
-                                    marker="o", markersize=3, label="Up")
+
+        # Use sum arrays as the "last complete" reference for the hysteresis plot
+        if self._sum_up is not None and self._cur_up is not None:
+            l, = self._ax_hyst.plot(self._cur_up, self._sum_up / max(1, self._sum_up.max()) * 1,
+                                     color=ACCENT, linewidth=1.5, marker="o",
+                                     markersize=3, label="Up (last complete)")
             handles.append(l)
-        if self._last_down:
-            # Sort by ascending current so the line reads left→right
-            pairs = sorted(self._last_down, key=lambda x: x[0])
-            xs = np.array([d[0] for d in pairs])
-            ys = np.array([d[1] for d in pairs], dtype=float)
-            l, = self._ax_hyst.plot(xs, ys, color=PURPLE, linewidth=1.5,
-                                    marker="s", markersize=3,
-                                    linestyle="--", label="Down")
+        if self._sum_down is not None and self._cur_down is not None:
+            xs_d = self._cur_down
+            ys_d = self._sum_down
+            # Sort by ascending current for left→right line
+            order = np.argsort(xs_d)
+            l, = self._ax_hyst.plot(xs_d[order], ys_d[order],
+                                     color=PURPLE, linewidth=1.5,
+                                     marker="s", markersize=3,
+                                     linestyle="--", label="Down (last complete)")
             handles.append(l)
         if handles:
             self._ax_hyst.legend(handles=handles, fontsize=8,
                                   facecolor=PANEL, labelcolor=FG)
 
         self._canvas.draw()
-
 
 # ===========================================================================
 # TAB REGISTRY – add new tabs here
@@ -1214,6 +1577,7 @@ TABS = [
     ("Scope Viewer",          ScopeViewerTab),
     ("Digital Output",        DigitalOutputTab),
     ("Wavegen Control",       WavegenControlTab),
+    ("Multimeter Readout",    MultimeterReadoutTab),
     ("Count Rate vs Time",    CountRateTimeTab),
     ("Count Rate vs Current", CountRateCurrentTab),
     # ("My New Tab",           MyNewTabClass),
