@@ -36,11 +36,9 @@ except ImportError:
 try:
     from spd3303c_power_supply import SPD3303X
     HAS_PSU = True
-    HAS_PSU_SIGILENT = True
 except Exception as e:
     print("Power supply SPD3303C package connection error:", e)
     HAS_PSU = False
-    HAS_PSU_SIGILENT = False
 
 try:
     from waveforms_ads import (
@@ -52,14 +50,6 @@ try:
 except Exception as e:
     print("ADS package connection error:", e)
     HAS_ADS = False
-
-try:
-    from e363xa_power_supply import *
-    HAS_PSU = True
-    HAS_PSU_KEYSIGHT = True
-except Exception as e:
-    print("Power supply E3633A package connection error:", e)
-    HAS_PSU_KEYSIGHT = False
 
 try:
     from temp_monitor import TempMonitor
@@ -976,7 +966,6 @@ class CountRateCurrentTab(tk.Frame):
         self.n_scans       = tk.IntVar(value=1)
         self.psu_ch        = tk.StringVar(value="CH1")
         self.psu_host      = tk.StringVar(value="")
-        self.flip_curr     = tk.BooleanVar(value=False)
         self.save_csv      = tk.BooleanVar(value=False)
         self.csv_path      = tk.StringVar(value="")
         self.save_pulse_csv = tk.BooleanVar(value=False)
@@ -1004,13 +993,6 @@ class CountRateCurrentTab(tk.Frame):
         r += 1
         _lf(sweep, "Voltmeter VISA:", col=0, row=r)
         _ef(sweep, self.dmm_voltmeter, col=1, row=r, width=28)
-
-        r += 1
-        tk.Checkbutton(sweep, text="Flip Current Direction",
-                       variable=self.flip_curr, command=self._on_flip_current,
-                       bg=PANEL, fg=FG, selectcolor=ENTRY_BG,
-                       activebackground=PANEL, font=SANS).grid(
-            column=0, row=r, columnspan=2, sticky="w", padx=PADX, pady=PADY)
 
         r += 1
         tk.Checkbutton(sweep, text="Save counts CSV", variable=self.save_csv,
@@ -1116,10 +1098,6 @@ class CountRateCurrentTab(tk.Frame):
     # ------------------------------------------------------------------
     # Stubs / helpers
     # ------------------------------------------------------------------
-
-    def _on_flip_current(self):
-        """Placeholder – connect to hardware polarity-flip logic here."""
-        pass
 
     def _degauss(self, ads, power_supply_ch, relay_ch=0):
         """
