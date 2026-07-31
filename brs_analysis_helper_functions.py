@@ -35,6 +35,20 @@ def beta_add_up_down_curves(upx, upy, downx, downy):
     # In practice, you would interpolate; here we return shifted x and summed y
     return downx_shifted, upy + downy
 
+def compensate_dataset(x, y):
+    """Returns y data scaled by x data.
+    This is useful for processing raw momentum data from the semicircular spectrometer, 
+    in which the bin-width is proportional to the bin.
+
+    Args:
+        x (numpy array): raw x data
+        y (numpy array): raw y data
+
+    Returns:
+        tuple of numpy arrays: raw x data and rescaled y data
+    """
+    return x, y/x
+
 def fk_transform(Z, momenta, counts):
     """
     Performs the Fermi-Kurie transform on the compensated beta spectrum.

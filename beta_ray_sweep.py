@@ -1,17 +1,18 @@
 """
 lab_controller.py
 =================
-Tkinter-based laboratory measurement GUI with six tabs:
-  1. Power Supply Control   – SPD3303X channel control & monitoring
-  2. Scope Viewer           – ADS triggered capture + past-N-traces display
-  3. Digital Output         – ADS digital pin high/low toggle
-  4. Wavegen Control        – ADS analog out DC high/low
-  5. Count-Rate vs Time     – Count triggers over an integration window; log to CSV
-  6. Count-Rate vs Current  – Sweep current up/down N times, count triggers; log to CSV
+Tkinter-based laboratory measurement GUI with seven tabs:
+  1. Power Supply Control   - SPD3303X channel control & monitoring
+  2. Scope Viewer           - ADS triggered capture + past-N-traces display
+  3. Digital Output         - ADS digital pin high/low toggle
+  4. Wavegen Control        - ADS analog out DC high/low
+  5. DMM Viewer             - DMM view current, voltage, temperature to coils
+  6. Count-Rate vs Time     - Count triggers over an integration window; log to CSV
+  7. Count-Rate vs Current  - Sweep current up/down N times, count triggers; log to CSV
 
 Requires:
   pip install matplotlib numpy
-  waveforms_ads.py and spd3303c_power_supply.py alongside this file.
+  waveforms_ads.py, temp_monitor.py, and spd3303c_power_supply.py alongside this file.
 """
 
 import tkinter as tk
@@ -221,7 +222,7 @@ class ScopeSettingsFrame(tk.LabelFrame):
 
 
 # ===========================================================================
-# TAB 1 – Power Supply
+# TAB 1 - Power Supply
 # ===========================================================================
 
 class PowerSupplyTab(tk.Frame):
@@ -346,7 +347,7 @@ class PowerSupplyTab(tk.Frame):
 
 
 # ===========================================================================
-# TAB 2 – Scope Viewer
+# TAB 2 - Scope Viewer
 # ===========================================================================
 
 class ScopeViewerTab(tk.Frame):
@@ -390,7 +391,7 @@ class ScopeViewerTab(tk.Frame):
     def _start(self):
         if self._running: return
         if not HAS_ADS: messagebox.showerror("Error", "waveforms_ads module not available."); return
-        self._running = True; self._status.set("Running…")
+        self._running = True; self._status.set("Running...")
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
 
@@ -445,7 +446,7 @@ class ScopeViewerTab(tk.Frame):
 
 
 # ===========================================================================
-# TAB 3 – Digital Output
+# TAB 3 - Digital Output
 # ===========================================================================
 
 class DigitalOutputTab(tk.Frame):
@@ -485,7 +486,7 @@ class DigitalOutputTab(tk.Frame):
             self._ads.digital_io_reset()
             self._ads.digital_io_set_output_enable(1 << pin)
             self._ads.digital_io_set_output(0)
-            self._status.set(f"Connected – pin {pin} as output (LOW)")
+            self._status.set(f"Connected - pin {pin} as output (LOW)")
             self._update_indicator(False)
         except Exception as e: messagebox.showerror("Error", str(e))
 
@@ -523,7 +524,7 @@ class DigitalOutputTab(tk.Frame):
 
 
 # ===========================================================================
-# TAB 4 – Wavegen Control
+# TAB 4 - Wavegen Control
 # ===========================================================================
 
 class WavegenControlTab(tk.Frame):
@@ -563,7 +564,7 @@ class WavegenControlTab(tk.Frame):
             self._ads.analog_out_reset()
             self._ads.analog_out_enable_node(channel=ch)
             self._ads.analog_out_set_dc(channel=ch, voltage_v=0)
-            self._status.set(f"Connected – ch {ch} as output (LOW)")
+            self._status.set(f"Connected - ch {ch} as output (LOW)")
             self._update_indicator(False)
         except Exception as e: messagebox.showerror("Error", str(e))
 
@@ -601,7 +602,7 @@ class WavegenControlTab(tk.Frame):
 
 
 # ===========================================================================
-# TAB 4.5 – Multimeter Readout  (voltage, current, temperature)
+# TAB 4.5 - Multimeter Readout  (voltage, current, temperature)
 # ===========================================================================
 
 class MultimeterReadoutTab(tk.Frame):
@@ -755,7 +756,7 @@ class MultimeterReadoutTab(tk.Frame):
 
 
 # ===========================================================================
-# TAB 5 – Count-Rate vs Time
+# TAB 5 - Count-Rate vs Time
 # ===========================================================================
 
 class CountRateTimeTab(tk.Frame):
@@ -895,7 +896,7 @@ class CountRateTimeTab(tk.Frame):
 # ===========================================================================
 
 # ===========================================================================
-# TAB 6 – Count-Rate vs Current  (full rewrite)
+# TAB 6 - Count-Rate vs Current
 # ===========================================================================
 
 class CountRateCurrentTab(tk.Frame):
@@ -931,7 +932,7 @@ class CountRateCurrentTab(tk.Frame):
         self._curr_disp  = tk.StringVar(value="—")
         self._t_start    = None
 
-        # Accumulated data – keyed by direction
+        # Accumulated data - keyed by direction
         self._last_up    = []     # [(meas_current, count), ...]  current scan
         self._last_down  = []
         self._sum_up     = None   # np.ndarray of summed counts
@@ -1085,9 +1086,9 @@ class CountRateCurrentTab(tk.Frame):
          self._ax_hyst) = axes
 
         _ax_style(self._ax_up_last, "Current (A)", "Counts",        "Latest Up Scan")
-        _ax_style(self._ax_up_sum,  "Current (A)", "Summed Counts", "Sum – Up Scans")
+        _ax_style(self._ax_up_sum,  "Current (A)", "Summed Counts", "Sum - Up Scans")
         _ax_style(self._ax_dn_last, "Current (A)", "Counts",        "Latest Down Scan")
-        _ax_style(self._ax_dn_sum,  "Current (A)", "Summed Counts", "Sum – Down Scans")
+        _ax_style(self._ax_dn_sum,  "Current (A)", "Summed Counts", "Sum - Down Scans")
         _ax_style(self._ax_hyst,    "Current (A)", "Counts",        "Hysteresis (Up vs Down)")
 
         self._canvas = FigureCanvasTkAgg(self._fig, master=right_sf.inner)
@@ -1102,9 +1103,9 @@ class CountRateCurrentTab(tk.Frame):
     def _degauss(self, ads, power_supply_ch, relay_ch=0):
         """
         Called once before the first scan begins.
-        ads                – WaveFormsADS object.
-        power_supply_ch    – PSU channel with .set_current() / .set_output().
-        relay_ch           – ADS analog-out channel used for polarity relay.
+        ads                - WaveFormsADS object.
+        power_supply_ch    - PSU channel with .set_current() / .set_output().
+        relay_ch           - ADS analog-out channel used for polarity relay.
         """
         NEG_RELAY_V = 5.0
         POS_RELAY_V = 0.0
@@ -1271,7 +1272,7 @@ class CountRateCurrentTab(tk.Frame):
                         for direction, currents in (("up",   currents_up),
                                                     ("down", currents_down)):
                             if not self._running: break
-                            label = f"Scan {scan_idx+1}/{n_scans} – {direction}"
+                            label = f"Scan {scan_idx+1}/{n_scans} - {direction}"
                             self._q.put(("status", label))
 
                             for cmd_current in currents:
@@ -1487,7 +1488,7 @@ class CountRateCurrentTab(tk.Frame):
         # ---- Latest up (may be in-progress) ----
         up_data = self._last_up   # live accumulation during scan
         if not up_data and self._sum_up is not None:
-            # scan_done was received – show nothing for "latest" until next scan starts
+            # scan_done was received - show nothing for "latest" until next scan starts
             up_data = []
         if up_data:
             xs = np.array([d[0] for d in up_data])
@@ -1499,9 +1500,9 @@ class CountRateCurrentTab(tk.Frame):
         # ---- Sum up ----
         if self._sum_up is not None and self._cur_up is not None:
             self._plot_single(self._ax_up_sum, self._cur_up, self._sum_up,
-                              GREEN, "Sum – Up Scans")
+                              GREEN, "Sum - Up Scans")
         else:
-            self._plot_single(self._ax_up_sum, None, None, GREEN, "Sum – Up Scans")
+            self._plot_single(self._ax_up_sum, None, None, GREEN, "Sum - Up Scans")
 
         # ---- Latest down (may be in-progress) ----
         dn_data = self._last_down
@@ -1515,9 +1516,9 @@ class CountRateCurrentTab(tk.Frame):
         # ---- Sum down ----
         if self._sum_down is not None and self._cur_down is not None:
             self._plot_single(self._ax_dn_sum, self._cur_down, self._sum_down,
-                              YELLOW, "Sum – Down Scans")
+                              YELLOW, "Sum - Down Scans")
         else:
-            self._plot_single(self._ax_dn_sum, None, None, YELLOW, "Sum – Down Scans")
+            self._plot_single(self._ax_dn_sum, None, None, YELLOW, "Sum - Down Scans")
 
         # ---- Hysteresis: last completed up + last completed down ----
         self._ax_hyst.clear()
@@ -1547,7 +1548,7 @@ class CountRateCurrentTab(tk.Frame):
         self._canvas.draw()
 
 # ===========================================================================
-# TAB REGISTRY – add new tabs here
+# TAB REGISTRY - add new tabs here
 # ===========================================================================
 
 TABS = [
