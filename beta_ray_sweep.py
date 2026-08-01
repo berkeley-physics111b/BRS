@@ -2,7 +2,7 @@
 lab_controller.py
 =================
 Tkinter-based laboratory measurement GUI with seven tabs:
-  1. Power Supply Control   - SPD3303X channel control & monitoring
+  1. Power Supply Control   - Keithley 2231A-30-3 channel control & monitoring
   2. Scope Viewer           - ADS triggered capture + past-N-traces display
   3. Digital Output         - ADS digital pin high/low toggle
   4. Wavegen Control        - ADS analog out DC high/low
@@ -11,8 +11,16 @@ Tkinter-based laboratory measurement GUI with seven tabs:
   7. Count-Rate vs Current  - Sweep current up/down N times, count triggers; log to CSV
 
 Requires:
-  pip install matplotlib numpy
-  waveforms_ads.py, temp_monitor.py, and spd3303c_power_supply.py alongside this file.
+  pip install matplotlib numpy pyvisa
+  waveforms_ads.py, temp_monitor.py, and keithley_2231a_power_supply.py alongside this file.
+
+Power supply connection:
+  The Keithley 2231A-30-3 is always opened at the fixed VISA address defined
+  in PSU_VISA_RESOURCE below (the same address used in
+  keithley_2231a_power_supply.py's own hardware smoke test). There is no
+  user-facing connection-mode selector; each tab's "Connect" action (or, for
+  the sweep tab, the Start action) simply opens that address and reports
+  success/failure in the GUI.
 """
 
 import tkinter as tk
@@ -35,10 +43,10 @@ except ImportError:
     HAS_MPL = False
 
 try:
-    from spd3303c_power_supply import SPD3303X
+    from keithley_2231a_power_supply import Keithley2231A
     HAS_PSU = True
 except Exception as e:
-    print("Power supply SPD3303C package connection error:", e)
+    print("Power supply Keithley2231A package connection error:", e)
     HAS_PSU = False
 
 try:
@@ -60,6 +68,17 @@ except Exception as e:
     HAS_DMM = False
 
 TEMP_LIMIT_C = 80.0   # Emergency-stop threshold
+
+# Fixed VISA address for the Keithley 2231A-30-3. Matches the VISA_RESOURCE
+# used in keithley_2231a_power_supply.py's __main__ hardware smoke test.
+# There's no connection-mode UI in this file; every tab that talks to the
+# power supply opens this address directly.
+PSU_VISA_RESOURCE = "ASRL8::INSTR"
+
+
+def _chan_num(var: "tk.StringVar") -> int:
+    """Parse a 'CH1'/'CH2' StringVar into the Keithley2231A channel int (1/2)."""
+    return int(var.get().replace("CH", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +250,7 @@ class PowerSupplyTab(tk.Frame):
         self._psu     = None
         self._poll_id = None
         self._status  = tk.StringVar(value="Not connected")
+        self._conn_indicator = tk.StringVar(value=f"● Not connected  ({PSU_VISA_RESOURCE})")
         self._build()
 
     def _build(self):
@@ -238,15 +258,11 @@ class PowerSupplyTab(tk.Frame):
 
         conn = tk.LabelFrame(self, text="Connection", bg=PANEL, fg=ACCENT, font=SANS_B)
         conn.pack(fill="x", padx=10, pady=8)
-        self.conn_type = tk.StringVar(value="USB")
-        tk.Label(conn, text="Interface:", bg=PANEL, fg=FG, font=SANS).grid(column=0, row=0, **pad, sticky="e")
-        ttk.OptionMenu(conn, self.conn_type, "USB", "USB", "Ethernet").grid(column=1, row=0, **pad, sticky="ew")
-        self.host_var = tk.StringVar(value="192.168.1.100")
-        tk.Label(conn, text="Host (Ethernet):", bg=PANEL, fg=FG, font=SANS).grid(column=2, row=0, **pad, sticky="e")
-        tk.Entry(conn, textvariable=self.host_var, width=16,
-                 bg=ENTRY_BG, fg=FG, insertbackground=FG, font=MONO).grid(column=3, row=0, **pad, sticky="ew")
-        _btn(conn, "Connect",    self._connect,    col=4, row=0, bg=GREEN, fg=BG)
-        _btn(conn, "Disconnect", self._disconnect, col=5, row=0, bg=RED,   fg=BG)
+        self._conn_lbl = tk.Label(conn, textvariable=self._conn_indicator,
+                                   bg=PANEL, fg=RED, font=SANS_B)
+        self._conn_lbl.grid(column=0, row=0, **pad, sticky="w")
+        _btn(conn, "Connect",    self._connect,    col=1, row=0, bg=GREEN, fg=BG)
+        _btn(conn, "Disconnect", self._disconnect, col=2, row=0, bg=RED,   fg=BG)
 
         ctrl = tk.LabelFrame(self, text="Channel Control", bg=PANEL, fg=ACCENT, font=SANS_B)
         ctrl.pack(fill="x", padx=10, pady=4)
@@ -282,64 +298,76 @@ class PowerSupplyTab(tk.Frame):
 
         _status_bar(self, self._status)
 
-    def _get_chan(self):
+    def _check_connected(self) -> bool:
         if self._psu is None:
             messagebox.showerror("Error", "Not connected to power supply.")
-            return None
-        return getattr(self._psu, self.ch_var.get(), None)
+            return False
+        return True
 
     def _connect(self):
         if not HAS_PSU:
             messagebox.showerror("Error", "Power supply module not available."); return
         try:
-            dev = (SPD3303X.usb_device() if self.conn_type.get() == "USB"
-                   else SPD3303X.ethernet_device(self.host_var.get())).__enter__()
+            dev = Keithley2231A(PSU_VISA_RESOURCE).__enter__()
             self._psu = dev
-            self._status.set("Connected to power supply")
+            self._status.set(f"Connected to power supply ({PSU_VISA_RESOURCE})")
+            self._conn_indicator.set(f"● Connected  ({PSU_VISA_RESOURCE})")
+            self._conn_lbl.config(fg=GREEN)
             self._do_poll()
         except Exception as e:
+            self._status.set("Not connected")
+            self._conn_indicator.set(f"● Not connected  ({PSU_VISA_RESOURCE})")
+            self._conn_lbl.config(fg=RED)
             messagebox.showerror("Connection Error", str(e))
 
     def _disconnect(self):
         if self._poll_id: self.after_cancel(self._poll_id); self._poll_id = None
         if self._psu:
-            try: self._psu._inst.close()
+            try: self._psu.__exit__(None, None, None)
             except Exception: pass
             self._psu = None
         self._status.set("Disconnected")
+        self._conn_indicator.set(f"● Not connected  ({PSU_VISA_RESOURCE})")
+        self._conn_lbl.config(fg=RED)
         self.meas_volt.set("—"); self.meas_curr.set("—")
 
     def _set_voltage(self):
-        ch = self._get_chan()
-        if ch:
-            try: ch.set_voltage(self.volt_set.get()); self._status.set(f"Voltage → {self.volt_set.get():.3f} V")
+        if self._check_connected():
+            try:
+                self._psu.channel_set(channel=_chan_num(self.ch_var),
+                                       value=self.volt_set.get(), quantity="voltage")
+                self._status.set(f"Voltage → {self.volt_set.get():.3f} V")
             except Exception as e: messagebox.showerror("Error", str(e))
 
     def _set_current(self):
-        ch = self._get_chan()
-        if ch:
-            try: ch.set_current(self.curr_set.get()); self._status.set(f"Current limit → {self.curr_set.get():.3f} A")
+        if self._check_connected():
+            try:
+                self._psu.channel_set(channel=_chan_num(self.ch_var),
+                                       value=self.curr_set.get(), quantity="current")
+                self._status.set(f"Current limit → {self.curr_set.get():.3f} A")
             except Exception as e: messagebox.showerror("Error", str(e))
 
     def _output_on(self):
-        ch = self._get_chan()
-        if ch:
-            try: ch.set_output(True);  self._status.set(f"{self.ch_var.get()} output ON")
+        if self._check_connected():
+            try:
+                self._psu.channel_enable(channel=_chan_num(self.ch_var))
+                self._status.set(f"{self.ch_var.get()} output ON")
             except Exception as e: messagebox.showerror("Error", str(e))
 
     def _output_off(self):
-        ch = self._get_chan()
-        if ch:
-            try: ch.set_output(False); self._status.set(f"{self.ch_var.get()} output OFF")
+        if self._check_connected():
+            try:
+                self._psu.channel_disable(channel=_chan_num(self.ch_var))
+                self._status.set(f"{self.ch_var.get()} output OFF")
             except Exception as e: messagebox.showerror("Error", str(e))
 
     def _poll_once(self):
-        ch = self._get_chan()
-        if ch and hasattr(ch, "measure_voltage"):
-            try:
-                self.meas_volt.set(f"{float(ch.measure_voltage()):.4f} V")
-                self.meas_curr.set(f"{float(ch.measure_current()):.4f} A")
-            except Exception as e: self._status.set(f"Poll error: {e}")
+        if self._psu is None: return
+        try:
+            ch = _chan_num(self.ch_var)
+            self.meas_volt.set(f"{float(self._psu.channel_measure(channel=ch, quantity='voltage')):.4f} V")
+            self.meas_curr.set(f"{float(self._psu.channel_measure(channel=ch, quantity='current')):.4f} A")
+        except Exception as e: self._status.set(f"Poll error: {e}")
 
     def _do_poll(self):
         self._poll_once()
@@ -444,87 +472,8 @@ class ScopeViewerTab(tk.Frame):
         self._ax.legend(fontsize=7, facecolor=PANEL, labelcolor=FG, loc='upper right')
         self._canvas.draw()
 
-
 # ===========================================================================
-# TAB 3 - Digital Output
-# ===========================================================================
-
-class DigitalOutputTab(tk.Frame):
-    def __init__(self, parent):
-        super().__init__(parent, bg=BG)
-        self._ads = None
-        self._status = tk.StringVar(value="Not connected")
-        self._level  = tk.StringVar(value="LOW")
-        self._build()
-
-    def _build(self):
-        pad = dict(padx=PADX, pady=PADY)
-        conn = tk.LabelFrame(self, text="ADS Connection", bg=PANEL, fg=ACCENT, font=SANS_B)
-        conn.pack(fill="x", padx=10, pady=8)
-        _btn(conn, "Connect ADS",    self._connect,    col=0, row=0, bg=GREEN, fg=BG)
-        _btn(conn, "Disconnect ADS", self._disconnect, col=1, row=0, bg=RED,   fg=BG)
-
-        ctrl = tk.LabelFrame(self, text="Digital Output Control", bg=PANEL, fg=ACCENT, font=SANS_B)
-        ctrl.pack(fill="x", padx=10, pady=4)
-        self.pin_var = tk.IntVar(value=0)
-        tk.Label(ctrl, text="Pin (0-based):", bg=PANEL, fg=FG, font=SANS).grid(column=0, row=0, **pad, sticky="e")
-        tk.Entry(ctrl, textvariable=self.pin_var, width=5,
-                 bg=ENTRY_BG, fg=FG, insertbackground=FG, font=MONO).grid(column=1, row=0, **pad, sticky="ew")
-        self._level_lbl = tk.Label(ctrl, textvariable=self._level, bg=PANEL, fg=RED, font=("Courier", 28, "bold"))
-        self._level_lbl.grid(column=0, row=1, columnspan=2, **pad)
-        btn_row = tk.Frame(ctrl, bg=PANEL)
-        btn_row.grid(column=0, row=2, columnspan=3, **pad, sticky="ew")
-        tk.Button(btn_row, text="Set HIGH", command=self._set_high, bg=GREEN, fg=BG, font=SANS_B, padx=14, pady=6, relief="flat").pack(side="left", padx=8)
-        tk.Button(btn_row, text="Set LOW",  command=self._set_low,  bg=RED,   fg=BG, font=SANS_B, padx=14, pady=6, relief="flat").pack(side="left", padx=8)
-        tk.Button(btn_row, text="Toggle",   command=self._toggle,   bg=BUTTON_BG, fg=FG, font=SANS_B, padx=14, pady=6, relief="flat").pack(side="left", padx=8)
-        _status_bar(self, self._status)
-
-    def _connect(self):
-        if not HAS_ADS: messagebox.showerror("Error", "waveforms_ads not available."); return
-        try:
-            self._ads = WaveFormsADS(); pin = self.pin_var.get()
-            self._ads.digital_io_reset()
-            self._ads.digital_io_set_output_enable(1 << pin)
-            self._ads.digital_io_set_output(0)
-            self._status.set(f"Connected - pin {pin} as output (LOW)")
-            self._update_indicator(False)
-        except Exception as e: messagebox.showerror("Error", str(e))
-
-    def _disconnect(self):
-        if self._ads:
-            try: self._ads.close()
-            except Exception: pass
-            self._ads = None
-        self._status.set("Disconnected")
-
-    def _require_ads(self):
-        if not self._ads: messagebox.showerror("Error", "Not connected."); return False
-        return True
-
-    def _set_high(self):
-        if not self._require_ads(): return
-        try:
-            self._ads.digital_io_write_pin(self.pin_var.get(), True)
-            self._update_indicator(True); self._status.set(f"Pin {self.pin_var.get()} → HIGH")
-        except Exception as e: messagebox.showerror("Error", str(e))
-
-    def _set_low(self):
-        if not self._require_ads(): return
-        try:
-            self._ads.digital_io_write_pin(self.pin_var.get(), False)
-            self._update_indicator(False); self._status.set(f"Pin {self.pin_var.get()} → LOW")
-        except Exception as e: messagebox.showerror("Error", str(e))
-
-    def _toggle(self):
-        self._set_low() if self._level.get() == "HIGH" else self._set_high()
-
-    def _update_indicator(self, high):
-        self._level.set("HIGH" if high else "LOW")
-        self._level_lbl.config(fg=GREEN if high else RED)
-
-
-# ===========================================================================
-# TAB 4 - Wavegen Control
+# TAB 3 - Wavegen Control
 # ===========================================================================
 
 class WavegenControlTab(tk.Frame):
@@ -602,7 +551,7 @@ class WavegenControlTab(tk.Frame):
 
 
 # ===========================================================================
-# TAB 4.5 - Multimeter Readout  (voltage, current, temperature)
+# TAB 4 - Multimeter Readout  (voltage, current, temperature)
 # ===========================================================================
 
 class MultimeterReadoutTab(tk.Frame):
@@ -930,6 +879,7 @@ class CountRateCurrentTab(tk.Frame):
         self._eta        = tk.StringVar(value="—")
         self._temp_disp  = tk.StringVar(value="—")
         self._curr_disp  = tk.StringVar(value="—")
+        self._psu_status = tk.StringVar(value=f"● Not connected  ({PSU_VISA_RESOURCE})")
         self._t_start    = None
 
         # Accumulated data - keyed by direction
@@ -966,7 +916,6 @@ class CountRateCurrentTab(tk.Frame):
         self.settling_time = tk.DoubleVar(value=0.5)
         self.n_scans       = tk.IntVar(value=1)
         self.psu_ch        = tk.StringVar(value="CH1")
-        self.psu_host      = tk.StringVar(value="")
         self.save_csv      = tk.BooleanVar(value=False)
         self.csv_path      = tk.StringVar(value="")
         self.save_pulse_csv = tk.BooleanVar(value=False)
@@ -979,7 +928,6 @@ class CountRateCurrentTab(tk.Frame):
         _lf(sweep, "PSU Channel:", col=0, row=r)
         ttk.OptionMenu(sweep, self.psu_ch, "CH1", "CH1", "CH2").grid(
             column=1, row=r, sticky="ew", padx=PADX, pady=PADY)
-        r += 1; _lf(sweep, "PSU Host (blank=USB):", col=0, row=r); _ef(sweep, self.psu_host, col=1, row=r, width=14)
         r += 1; _lf(sweep, "I start (A):",          col=0, row=r); _ef(sweep, self.i_start,       col=1, row=r)
         r += 1; _lf(sweep, "I stop (A):",           col=0, row=r); _ef(sweep, self.i_stop,        col=1, row=r)
         r += 1; _lf(sweep, "I step / bin (A):",     col=0, row=r); _ef(sweep, self.i_step,        col=1, row=r)
@@ -1025,19 +973,25 @@ class CountRateCurrentTab(tk.Frame):
         live = tk.LabelFrame(inn, text="Live Hardware Readings", bg=PANEL, fg=ACCENT, font=SANS_B)
         live.pack(fill="x", padx=2, pady=4)
 
-        tk.Label(live, text="Temperature:", bg=PANEL, fg=FG, font=SANS).grid(
+        tk.Label(live, text="Power Supply:", bg=PANEL, fg=FG, font=SANS).grid(
             column=0, row=0, sticky="e", padx=PADX, pady=2)
+        self._psu_status_lbl = tk.Label(live, textvariable=self._psu_status,
+                                         bg=PANEL, fg=RED, font=SANS_B)
+        self._psu_status_lbl.grid(column=1, row=0, columnspan=2, sticky="w", padx=PADX, pady=2)
+
+        tk.Label(live, text="Temperature:", bg=PANEL, fg=FG, font=SANS).grid(
+            column=0, row=1, sticky="e", padx=PADX, pady=2)
         self._temp_lbl = tk.Label(live, textvariable=self._temp_disp,
                                   bg=PANEL, fg=GREEN, font=("Courier", 13, "bold"))
-        self._temp_lbl.grid(column=1, row=0, sticky="w", padx=PADX)
-        tk.Label(live, text="°C", bg=PANEL, fg=FG, font=SANS).grid(column=2, row=0, sticky="w")
+        self._temp_lbl.grid(column=1, row=1, sticky="w", padx=PADX)
+        tk.Label(live, text="°C", bg=PANEL, fg=FG, font=SANS).grid(column=2, row=1, sticky="w")
 
         tk.Label(live, text="Measured Current:", bg=PANEL, fg=FG, font=SANS).grid(
-            column=0, row=1, sticky="e", padx=PADX, pady=2)
+            column=0, row=2, sticky="e", padx=PADX, pady=2)
         tk.Label(live, textvariable=self._curr_disp,
                  bg=PANEL, fg=ACCENT, font=("Courier", 13, "bold")).grid(
-            column=1, row=1, sticky="w", padx=PADX)
-        tk.Label(live, text="A", bg=PANEL, fg=FG, font=SANS).grid(column=2, row=1, sticky="w")
+            column=1, row=2, sticky="w", padx=PADX)
+        tk.Label(live, text="A", bg=PANEL, fg=FG, font=SANS).grid(column=2, row=2, sticky="w")
 
         # ---- Progress box ----
         prog = tk.LabelFrame(inn, text="Scan Progress", bg=PANEL, fg=ACCENT, font=SANS_B)
@@ -1100,12 +1054,13 @@ class CountRateCurrentTab(tk.Frame):
     # Stubs / helpers
     # ------------------------------------------------------------------
 
-    def _degauss(self, ads, power_supply_ch, relay_ch=0):
+    def _degauss(self, ads, psu, psu_channel, relay_ch=0):
         """
         Called once before the first scan begins.
-        ads                - WaveFormsADS object.
-        power_supply_ch    - PSU channel with .set_current() / .set_output().
-        relay_ch           - ADS analog-out channel used for polarity relay.
+        ads          - WaveFormsADS object.
+        psu          - Keithley2231A instance.
+        psu_channel  - PSU channel number (1 or 2) to pulse.
+        relay_ch     - ADS analog-out channel used for polarity relay.
         """
         NEG_RELAY_V = 5.0
         POS_RELAY_V = 0.0
@@ -1114,9 +1069,9 @@ class CountRateCurrentTab(tk.Frame):
         ads.analog_out_reset()
         ads.analog_out_enable_node(channel=relay_ch)
         ads.analog_out_set_dc(channel=relay_ch, voltage_v=NEG_RELAY_V)
-        power_supply_ch.set_current(0.6)
+        psu.channel_set(channel=psu_channel, value=0.6, quantity="current")
         time.sleep(SETTLE)
-        power_supply_ch.set_current(0)
+        psu.channel_set(channel=psu_channel, value=0, quantity="current")
         time.sleep(SETTLE)
         ads.analog_out_set_dc(channel=relay_ch, voltage_v=POS_RELAY_V)
 
@@ -1216,11 +1171,12 @@ class CountRateCurrentTab(tk.Frame):
         self._pulse_csv_file = self._pulse_csv_writer = None
         self._status.set("Stopped"); self._scan_status.set("Stopped")
 
-    def _emergency_stop(self, ch, reason=""):
+    def _emergency_stop(self, psu, psu_channel, reason=""):
         """Turn PSU off immediately and signal the main thread."""
-        try: ch.set_output(False)
+        try: psu.channel_disable(channel=psu_channel)
         except Exception: pass
         self._running = False
+        self._q.put(("psu_status", f"Not connected  ({PSU_VISA_RESOURCE})"))
         self._q.put(("estop", reason))
 
     def _clear(self):
@@ -1245,12 +1201,12 @@ class CountRateCurrentTab(tk.Frame):
         n_half        = len(currents_up)
         n_total       = n_scans * 2 * n_half
 
-        host = self.psu_host.get().strip()
+        self._q.put(("psu_status", f"Connecting…  ({PSU_VISA_RESOURCE})"))
         try:
-            psu_ctx = SPD3303X.ethernet_device(host) if host else SPD3303X.usb_device()
-            with psu_ctx as psu:
-                ch = getattr(psu, self.psu_ch.get())
-                ch.set_output(True)
+            with Keithley2231A(PSU_VISA_RESOURCE) as psu:
+                self._q.put(("psu_status", f"Connected  ({PSU_VISA_RESOURCE})"))
+                psu_ch = _chan_num(self.psu_ch)
+                psu.channel_enable(channel=psu_ch)
 
                 # Open DMM for temperature and current readback
                 dmm = TempMonitor(
@@ -1264,7 +1220,7 @@ class CountRateCurrentTab(tk.Frame):
 
                     # --- Degauss ---
                     self._q.put(("status", "Degaussing…"))
-                    self._degauss(ads=dev, power_supply_ch=ch, relay_ch=0)
+                    self._degauss(ads=dev, psu=psu, psu_channel=psu_ch, relay_ch=0)
 
                     for scan_idx in range(n_scans):
                         if not self._running: break
@@ -1277,7 +1233,7 @@ class CountRateCurrentTab(tk.Frame):
 
                             for cmd_current in currents:
                                 if not self._running: break
-                                ch.set_current(cmd_current)
+                                psu.channel_set(channel=psu_ch, value=cmd_current, quantity="current")
 
                                 # ---- Settling phase with mid-point temp check ----
                                 if settle > 0:
@@ -1293,7 +1249,7 @@ class CountRateCurrentTab(tk.Frame):
                                         t_spike = dmm.temp_spike
                                         self._q.put(("temp_check", t_check))
                                         if t_check > TEMP_LIMIT_C and not t_spike:
-                                            self._emergency_stop(ch,
+                                            self._emergency_stop(psu, psu_ch,
                                                 f"TEMPERATURE LIMIT EXCEEDED: "
                                                 f"{t_check:.1f}°C > {TEMP_LIMIT_C}°C")
                                             return
@@ -1368,11 +1324,12 @@ class CountRateCurrentTab(tk.Frame):
                             # Full half-scan done
                             self._q.put(("scan_done", direction))
 
-                ch.set_output(False)
+                psu.channel_disable(channel=psu_ch)
 
         except Exception as e:
             self._q.put(("error", str(e)))
 
+        self._q.put(("psu_status", f"Not connected  ({PSU_VISA_RESOURCE})"))
         self._running = False
         self._q.put(("status", "Finished"))
 
@@ -1387,6 +1344,12 @@ class CountRateCurrentTab(tk.Frame):
 
             if msg[0] == "status":
                 self._scan_status.set(msg[1])
+
+            elif msg[0] == "psu_status":
+                _, text = msg
+                self._psu_status.set(f"● {text}")
+                self._psu_status_lbl.config(fg=(GREEN if text.startswith("Connected") else
+                                                 YELLOW if text.startswith("Connecting") else RED))
 
             elif msg[0] == "live":
                 _, meas_i, meas_t = msg
@@ -1554,7 +1517,6 @@ class CountRateCurrentTab(tk.Frame):
 TABS = [
     ("Power Supply",          PowerSupplyTab),
     ("Scope Viewer",          ScopeViewerTab),
-    ("Digital Output",        DigitalOutputTab),
     ("Wavegen Control",       WavegenControlTab),
     ("Multimeter Readout",    MultimeterReadoutTab),
     ("Count Rate vs Time",    CountRateTimeTab),

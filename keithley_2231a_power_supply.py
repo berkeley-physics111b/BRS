@@ -223,6 +223,21 @@ class Keithley2231A(object):
         """OUTPut[:STATe][:ALL] - switches all three channels together."""
         self.write(f"OUTP {'ON' if status else 'OFF'}")
 
+    # -- fine control via external board --------------------------------------
+    
+    def fine_control_enable(self):
+        
+        ...
+
+    def fine_control_disable(self):
+        ...
+
+    def fine_control_write(self):
+        ...
+
+    def fine_control_read(self):
+        ...
+
 
 if __name__ == "__main__":
     # Simple hardware test:
