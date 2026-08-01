@@ -237,7 +237,7 @@ if __name__ == "__main__":
 
     TEST_CHANNEL = 1
     TEST_VOLTAGE = 1.0     # volts - low enough to be safe with nothing/anything connected
-    TEST_CURRENT_LIMIT = 0.1  # amps
+    TEST_CURRENT_LIMIT = 0.005  # amps
 
     with Keithley2231A(VISA_RESOURCE) as supply:
         idn = supply.query("*IDN?")
@@ -247,7 +247,7 @@ if __name__ == "__main__":
         supply.channel_set(channel=TEST_CHANNEL, value=TEST_CURRENT_LIMIT, quantity="current")
         supply.channel_enable(channel=TEST_CHANNEL)
 
-        time.sleep(0.5)  # let the output settle
+        time.sleep(5)  # let the output settle / user visually check
 
         setpoint = supply.channel_get_setpoint(channel=TEST_CHANNEL, quantity="voltage")
         measured = supply.channel_measure(channel=TEST_CHANNEL, quantity="voltage")
