@@ -226,18 +226,46 @@ class Keithley2231A(object):
     # -- fine control via external board --------------------------------------
     
     def fine_control_enable(self):
-        
-        ...
+        """Enables two channels at once for BRS fine current control using external board."""
+        self.channel_enable(channel=1)
+        self.channel_enable(channel=2)
 
     def fine_control_disable(self):
-        ...
+        """Disables two channels at once for BRS fine current control using external board."""
+        self.channel_disable(channel=1)
+        self.channel_disable(channel=2)
 
-    def fine_control_write(self):
-        ...
+    def voltage_to_current(self, voltage):
+        vmin = 0 # V
+        vmax = 0.2 # V
+        imin = 0 # A
+        imax = 0.01 # A
+        slope = (imax - imin) / (vmax - vmin)
+        return round(slope * voltage, 6) # assuming resolution of ~uA post-board
 
-    def fine_control_read(self):
-        ...
+    def current_to_voltage(self, current):
+        vmin = 0.0 # V
+        vmax = 0.2 # V
+        imin = 0 # A
+        imax = 0.01 # A
+        slope = (imax - imin) / (vmax - vmin)
+        return round(1/slope * current, 2) # resolution of 10 mV on Keithley
 
+    def fine_control_set(self, value):
+        """Using external board, increases precision of power supply output by combining output
+        from two channels. Value is assumed to be in A."""
+        coarse_offset = round(value, 2) # value out to 10 mA (precision of channel)
+        fine_offset = round(value - coarse_offset, 6) # value after 10 mA (rounded to deal with floating point)
+        fine_offset_volt = self.current_to_voltage(fine_offset)
+        self.channel_set(channel=1, value=coarse_offset, quantity="current")
+        self.channel_set(channel=2, value=fine_offset_volt, quantity="voltage")
+
+    def fine_control_measure(self):
+        """Read version of fine_control_set. Returns value in A."""
+        coarse_offset = self.channel_measure(channel=1, quantity="current")
+        fine_offset_volt = self.channel_measure(channel=2, quantity="voltage")
+        fine_offset = self.voltage_to_current(fine_offset_volt)
+        return coarse_offset + fine_offset
 
 if __name__ == "__main__":
     # Simple hardware test:
@@ -285,3 +313,14 @@ if __name__ == "__main__":
 
         supply.channel_disable(channel=TEST_CHANNEL)
         print("Test passed.")
+        print("Testing fine current control.")
+
+        supply.fine_control_enable()
+        supply.fine_control_set(value=0.0111)
+        time.sleep(3)
+        value_a = supply.fine_control_measure()
+        supply.fine_control_set(value=0.0112)
+        time.sleep(3)
+        value_b = supply.fine_control_measure()
+        print(f"resolution estimate: {round(value_b - value_a, 6)}")
+        print("Test finished.")
