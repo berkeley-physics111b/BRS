@@ -332,7 +332,7 @@ class Keithley2231A(object):
         fine_offset = round(value - round(value,2), 6) # value after 10 mA (rounded to deal with floating point)
         fine_offset_volt = self.current_to_voltage(fine_offset)
         self.channel_set(channel=1, value=coarse_offset, quantity="voltage")
-        self.channel_set(channel=2, value=12, quantity="voltage")
+        self.channel_set(channel=2, value=5, quantity="voltage")
         self.channel_set(channel=3, value=fine_offset_volt, quantity="voltage")
 
     def fine_control_measure(self):

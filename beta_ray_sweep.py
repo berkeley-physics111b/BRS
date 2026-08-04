@@ -911,7 +911,7 @@ class CountRateCurrentTab(tk.Frame):
 
         self.i_start       = tk.DoubleVar(value=0.0)
         self.i_stop        = tk.DoubleVar(value=0.1)
-        self.i_step        = tk.DoubleVar(value=0.01)
+        self.i_step        = tk.DoubleVar(value=0.001)
         self.integ_time    = tk.DoubleVar(value=1.0)
         self.settling_time = tk.DoubleVar(value=0.5)
         self.n_scans       = tk.IntVar(value=1)
