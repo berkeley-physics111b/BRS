@@ -8,6 +8,24 @@ if not logger.hasHandlers():
 logger.setLevel(logging.DEBUG)
 
 
+class Keithley2231AException(Exception):
+    """
+    Raised for any Keithley2231A driver-level error (device not found,
+    unexpected/unsupported *IDN? response, VISA I/O failure, invalid
+    channel/quantity/setpoint, etc).
+
+    Wraps the original exception (if any) so callers can still inspect the
+    root cause via the `original_error` attribute, while getting a single,
+    consistent driver-specific exception type to catch.
+    """
+
+    def __init__(self, message: str, original_error: Exception = None):
+        self.original_error = original_error
+        if original_error is not None:
+            message = f"{message} (caused by {type(original_error).__name__}: {original_error})"
+        super().__init__(message)
+
+
 class Keithley2231A(object):
     """
     Driver for the Keithley (Tektronix) 2231A-30-3 triple-channel DC power supply.
@@ -20,8 +38,7 @@ class Keithley2231A(object):
     the requested channel before issuing its SCPI command.
 
     CH1 and CH2 are the two 0-30 V / 3 A adjustable channels.
-    CH3 is the fixed 5 V / 3 A channel (voltage/current are not adjustable,
-    only its output can be switched on/off), matching the front panel.
+    CH3 is 0-5 V / 3 A. Channel numbering matches front panel.
 
     Usage:
         with Keithley2231A("ASRL5::INSTR") as supply:
@@ -34,15 +51,25 @@ class Keithley2231A(object):
     If visa_resource is omitted, the driver probes every VISA resource and
     picks the first one that answers *IDN? as a known model.
 
+    All driver-level errors are raised as Keithley2231AException, which wraps
+    the original underlying exception (e.g. a pyvisa.errors.VisaIOError) in
+    its `original_error` attribute.
+
     Reference: Model 2231A-30-3 Reference Manual (077-1004-01), Section 5,
     SCPI command reference.
     """
 
     KNOWN_MODELS = ["2231A-30-3"]
 
-    ADJUSTABLE_CHANNELS = (1, 2, 3)   # CH1 / CH2: settable voltage & current
-    FIXED_CHANNELS = (3,)          # CH3: fixed 5 V, output on/off only
-    ALL_CHANNELS = ADJUSTABLE_CHANNELS# + FIXED_CHANNELS
+    LARGE_RANGE_CHANNELS = (1, 2) # CH1 / CH2: 0-30V, 0-3A
+    SMALL_RANGE_CHANNELS = (3,) # CH3: 0-5 V, 0-3A
+    ALL_CHANNELS = LARGE_RANGE_CHANNELS + SMALL_RANGE_CHANNELS
+
+    # Allowed setpoint ranges, matching
+    # LARGE_RANGE_CHANNELS / SMALL_RANGE_CHANNELS: CH1/CH2 are 0-30 V, 0-3 A;
+    # CH3 is 0-5 V, 0-3 A. Keyed by quantity, values are (min, max) inclusive.
+    LARGE_RANGE_LIMITS = {"voltage": (0.0, 30.0), "current": (0.0, 3.0)}
+    SMALL_RANGE_LIMITS = {"voltage": (0.0, 5.0), "current": (0.0, 3.0)}
 
     QUANTITY_COMMANDS = {
         "voltage": "VOLT",
@@ -54,11 +81,7 @@ class Keithley2231A(object):
         "power": "MEAS:POW?",
     }
 
-    FINE_TUNE_VMIN = 0.0
-    FINE_TUNE_VMAX = 2.0
-    FINE_TUNE_IMIN = 0.0
-    FINE_TUNE_IMAX = 0.01
-    FINE_TUNE_A = 1.0
+    FINE_TUNE_A = 200.0
     FINE_TUNE_B = 0.0
 
     def __init__(self, visa_resource: str = None, baud_rate: int = 9600):
@@ -78,15 +101,24 @@ class Keithley2231A(object):
     # -- connection lifecycle -------------------------------------------------
 
     def __enter__(self):
-        self._rm = pyvisa.ResourceManager()
+        try:
+            self._rm = pyvisa.ResourceManager()
+        except Exception as e:
+            raise Keithley2231AException("Failed to create VISA ResourceManager", e) from e
 
         if self._visa_resource is None:
             logger.debug("No VISA resource given, trying to auto-detect the 2231A-30-3")
             self._visa_resource = self._auto_detect(self._rm)
             if self._visa_resource is None:
-                raise Exception("No device found")
+                raise Keithley2231AException("No device found")
 
-        self._inst = self._rm.open_resource(self._visa_resource)
+        try:
+            self._inst = self._rm.open_resource(self._visa_resource)
+        except Exception as e:
+            raise Keithley2231AException(
+                f"Failed to open VISA resource {self._visa_resource!r}", e
+            ) from e
+
         # SCPI traffic over the 2231A-001 adapter is newline terminated at a
         # fixed baud rate.
         self._inst.write_termination = "\n"
@@ -96,19 +128,19 @@ class Keithley2231A(object):
 
         try:
             dsc = self.query("*IDN?")
-        except pyvisa.errors.VisaIOError:
+        except pyvisa.errors.VisaIOError as e:
             self._inst.close()
-            raise
+            raise Keithley2231AException("Failed to query *IDN? from device", e) from e
 
         # Keithley 2231A-30-3 *IDN? format:
         # "Keithley Instruments, 2231A-30-3, <serial>, <firmware>"
         identity_items = [item.strip() for item in dsc.split(",")]
         if len(identity_items) != 4:
-            raise Exception(f"Unexpected *IDN? response: {dsc!r}")
+            raise Keithley2231AException(f"Unexpected *IDN? response: {dsc!r}")
         mnf, model, serial, firmware = identity_items
         logger.debug(f"Discovered {model} by {mnf} (SN {serial}, FW {firmware})")
         if model not in self.KNOWN_MODELS:
-            raise Exception(f"Device {model} not supported")
+            raise Keithley2231AException(f"Device {model} not supported")
 
         # Switch the instrument into remote mode, per Section 5 of the manual.
         self.write("SYST:REM")
@@ -147,12 +179,20 @@ class Keithley2231A(object):
     # -- raw SCPI I/O -----------------------------------------------------
 
     def write(self, cmd: str):
-        self._inst.write(cmd)
+        try:
+            self._inst.write(cmd)
+        except Exception as e:
+            raise Keithley2231AException(f"Failed to write SCPI command {cmd!r}", e) from e
         time.sleep(0.1)
 
     def query(self, cmd: str):
         self.write(cmd)
-        rep = self._inst.read()
+        try:
+            rep = self._inst.read()
+        except Exception as e:
+            raise Keithley2231AException(
+                f"Failed to read response for SCPI command {cmd!r}", e
+            ) from e
         time.sleep(0.1)
         return rep
 
@@ -160,21 +200,43 @@ class Keithley2231A(object):
 
     def _select_channel(self, channel: int):
         if channel not in self.ALL_CHANNELS:
-            raise ValueError(f"channel must be one of {self.ALL_CHANNELS}, got {channel!r}")
+            raise Keithley2231AException(
+                f"channel must be one of {self.ALL_CHANNELS}, got {channel!r}"
+            )
         self.write(f"INST:NSEL {channel}")
 
-    def _check_adjustable(self, channel: int):
-        if channel not in self.ADJUSTABLE_CHANNELS:
-            raise ValueError(
-                f"CH{channel} is a fixed-output channel (5 V) with no adjustable "
-                f"voltage/current; only channels {self.ADJUSTABLE_CHANNELS} support this"
+    def _check_adjustable(self, channel: int, value: float, quantity: str):
+        """
+        Validate that `value` is within the allowed range for `quantity`
+        (voltage/current) on `channel`. CH1/CH2 use LARGE_RANGE_LIMITS
+        (0-30 V, 0-3 A) and CH3 uses SMALL_RANGE_LIMITS (0-5 V, 0-3 A).
+        """
+        if channel in self.LARGE_RANGE_CHANNELS:
+            limits = self.LARGE_RANGE_LIMITS
+        elif channel in self.SMALL_RANGE_CHANNELS:
+            limits = self.SMALL_RANGE_LIMITS
+        else:
+            raise Keithley2231AException(
+                f"channel must be one of {self.ALL_CHANNELS}, got {channel!r}"
+            )
+
+        if quantity not in limits:
+            raise Keithley2231AException(
+                f"quantity must be one of {tuple(limits)}, got {quantity!r}"
+            )
+
+        low, high = limits[quantity]
+        if not (low <= value <= high):
+            raise Keithley2231AException(
+                f"{quantity} setpoint {value} is out of range for CH{channel}; "
+                f"must be between {low} and {high}"
             )
 
     @staticmethod
     def _check_quantity(quantity: str, valid: dict):
         quantity = quantity.lower()
         if quantity not in valid:
-            raise ValueError(f"quantity must be one of {tuple(valid)}, got {quantity!r}")
+            raise Keithley2231AException(f"quantity must be one of {tuple(valid)}, got {quantity!r}")
         return quantity
 
     # -- per-channel control --------------------------------------------------
@@ -197,23 +259,30 @@ class Keithley2231A(object):
 
     def channel_set(self, channel: int, value: float, quantity: str = "voltage"):
         """
-        Set the voltage or current setpoint on an adjustable channel (CH1/CH2).
+        Set the voltage or current setpoint on a channel.
 
-        channel: 1 or 2
-        value: setpoint, in volts or amps depending on `quantity`
+        channel: 1, 2, or 3
+        value: setpoint, in volts or amps depending on `quantity`. Must fall
+            within the channel's allowed range (0-30 V / 0-3 A for CH1/CH2,
+            0-5 V / 0-3 A for CH3).
         quantity: "voltage" or "current"
         """
-        self._check_adjustable(channel)
         quantity = self._check_quantity(quantity, self.QUANTITY_COMMANDS)
+        self._check_adjustable(channel, value, quantity)
         self._select_channel(channel)
         self.write(f"{self.QUANTITY_COMMANDS[quantity]} {value:.3f}")
 
     def channel_get_setpoint(self, channel: int, quantity: str = "voltage") -> float:
-        """Read back the programmed voltage or current setpoint (CH1/CH2 only)."""
-        self._check_adjustable(channel)
+        """Read back the programmed voltage or current setpoint."""
         quantity = self._check_quantity(quantity, self.QUANTITY_COMMANDS)
         self._select_channel(channel)
-        return float(self.query(f"{self.QUANTITY_COMMANDS[quantity]}?"))
+        resp = self.query(f"{self.QUANTITY_COMMANDS[quantity]}?")
+        try:
+            return float(resp)
+        except ValueError as e:
+            raise Keithley2231AException(
+                f"Could not parse setpoint response {resp!r} as float", e
+            ) from e
 
     def channel_measure(self, channel: int, quantity: str = "voltage") -> float:
         """
@@ -222,7 +291,13 @@ class Keithley2231A(object):
         """
         quantity = self._check_quantity(quantity, self.MEASURE_COMMANDS)
         self._select_channel(channel)
-        return float(self.query(self.MEASURE_COMMANDS[quantity]))
+        resp = self.query(self.MEASURE_COMMANDS[quantity])
+        try:
+            return float(resp)
+        except ValueError as e:
+            raise Keithley2231AException(
+                f"Could not parse measurement response {resp!r} as float", e
+            ) from e
 
     # -- all-channel control --------------------------------------------------
 
@@ -245,12 +320,10 @@ class Keithley2231A(object):
         self.channel_disable(channel=3)
 
     def voltage_to_current(self, voltage):
-        slope = (self.FINE_TUNE_IMAX - self.FINE_TUNE_IMIN) / (self.FINE_TUNE_VMAX - self.FINE_TUNE_VMIN)
-        return round(self.FINE_TUNE_A * slope * voltage + self.FINE_TUNE_B, 6) # assuming resolution of ~uA post-board
+        return round(self.FINE_TUNE_A * voltage + self.FINE_TUNE_B, 6) # assuming resolution of ~uA post-board
 
     def current_to_voltage(self, current):
-        slope = (self.FINE_TUNE_IMAX - self.FINE_TUNE_IMIN) / (self.FINE_TUNE_VMAX - self.FINE_TUNE_VMIN)
-        return round(1/(self.FINE_TUNE_A * slope) * current + self.FINE_TUNE_B, 6) # resolution of 10 mV on Keithley
+        return round((current - self.FINE_TUNE_B) / self.FINE_TUNE_A, 2) # resolution of 10 mV on Keithley
 
     def fine_control_set(self, value):
         """Using external board, increases precision of power supply output by combining output
@@ -276,6 +349,7 @@ if __name__ == "__main__":
     #   3. Enable CH1's output
     #   4. Read back the setpoint and the actual measured voltage
     #   5. Disable the output again
+    #   6. Tests fine current control.
     #
     # Set VISA_RESOURCE as None to let the driver auto-detect the instrument.
     VISA_RESOURCE = "ASRL8::INSTR"
@@ -325,4 +399,5 @@ if __name__ == "__main__":
         time.sleep(3)
         value_b = supply.fine_control_measure()
         print(f"resolution estimate: {round(value_b - value_a, 6)}")
+        supply.fine_control_disable()
         print("Test finished.")

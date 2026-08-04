@@ -268,7 +268,7 @@ class PowerSupplyTab(tk.Frame):
         ctrl.pack(fill="x", padx=10, pady=4)
         self.ch_var = tk.StringVar(value="CH1")
         tk.Label(ctrl, text="Channel:", bg=PANEL, fg=FG, font=SANS).grid(column=0, row=0, **pad, sticky="e")
-        ttk.OptionMenu(ctrl, self.ch_var, "CH1", "CH1", "CH2").grid(column=1, row=0, **pad, sticky="ew")
+        ttk.OptionMenu(ctrl, self.ch_var, "CH1", "CH1", "CH2", "CH3").grid(column=1, row=0, **pad, sticky="ew")
 
         self.volt_set = tk.DoubleVar(value=3.3)
         self.curr_set = tk.DoubleVar(value=0.5)
@@ -915,7 +915,6 @@ class CountRateCurrentTab(tk.Frame):
         self.integ_time    = tk.DoubleVar(value=1.0)
         self.settling_time = tk.DoubleVar(value=0.5)
         self.n_scans       = tk.IntVar(value=1)
-        self.psu_ch        = tk.StringVar(value="CH1")
         self.save_csv      = tk.BooleanVar(value=False)
         self.csv_path      = tk.StringVar(value="")
         self.save_pulse_csv = tk.BooleanVar(value=False)
@@ -925,10 +924,7 @@ class CountRateCurrentTab(tk.Frame):
         self.dmm_voltmeter = tk.StringVar(value="USB0::0x05E6::0x2110::1415286::INSTR")
 
         r = 0
-        _lf(sweep, "PSU Channel:", col=0, row=r)
-        ttk.OptionMenu(sweep, self.psu_ch, "CH1", "CH1", "CH2").grid(
-            column=1, row=r, sticky="ew", padx=PADX, pady=PADY)
-        r += 1; _lf(sweep, "I start (A):",          col=0, row=r); _ef(sweep, self.i_start,       col=1, row=r)
+        _lf(sweep, "I start (A):",          col=0, row=r); _ef(sweep, self.i_start,       col=1, row=r)
         r += 1; _lf(sweep, "I stop (A):",           col=0, row=r); _ef(sweep, self.i_stop,        col=1, row=r)
         r += 1; _lf(sweep, "I step / bin (A):",     col=0, row=r); _ef(sweep, self.i_step,        col=1, row=r)
         r += 1; _lf(sweep, "Integration Time (s):", col=0, row=r); _ef(sweep, self.integ_time,    col=1, row=r)
@@ -1054,12 +1050,11 @@ class CountRateCurrentTab(tk.Frame):
     # Stubs / helpers
     # ------------------------------------------------------------------
 
-    def _degauss(self, ads, psu, psu_channel, relay_ch=0):
+    def _degauss(self, ads, psu, relay_ch=0):
         """
         Called once before the first scan begins.
         ads          - WaveFormsADS object.
-        psu          - Keithley2231A instance.
-        psu_channel  - PSU channel number (1 or 2) to pulse.
+        psu          - Keithley2231A instance (driven via fine current control).
         relay_ch     - ADS analog-out channel used for polarity relay.
         """
         NEG_RELAY_V = 5.0
@@ -1069,9 +1064,9 @@ class CountRateCurrentTab(tk.Frame):
         ads.analog_out_reset()
         ads.analog_out_enable_node(channel=relay_ch)
         ads.analog_out_set_dc(channel=relay_ch, voltage_v=NEG_RELAY_V)
-        psu.channel_set(channel=psu_channel, value=0.6, quantity="current")
+        psu.fine_control_set(value=0.6)
         time.sleep(SETTLE)
-        psu.channel_set(channel=psu_channel, value=0, quantity="current")
+        psu.fine_control_set(value=0)
         time.sleep(SETTLE)
         ads.analog_out_set_dc(channel=relay_ch, voltage_v=POS_RELAY_V)
 
@@ -1171,9 +1166,9 @@ class CountRateCurrentTab(tk.Frame):
         self._pulse_csv_file = self._pulse_csv_writer = None
         self._status.set("Stopped"); self._scan_status.set("Stopped")
 
-    def _emergency_stop(self, psu, psu_channel, reason=""):
+    def _emergency_stop(self, psu, reason=""):
         """Turn PSU off immediately and signal the main thread."""
-        try: psu.channel_disable(channel=psu_channel)
+        try: psu.fine_control_disable()
         except Exception: pass
         self._running = False
         self._q.put(("psu_status", f"Not connected  ({PSU_VISA_RESOURCE})"))
@@ -1205,8 +1200,7 @@ class CountRateCurrentTab(tk.Frame):
         try:
             with Keithley2231A(PSU_VISA_RESOURCE) as psu:
                 self._q.put(("psu_status", f"Connected  ({PSU_VISA_RESOURCE})"))
-                psu_ch = _chan_num(self.psu_ch)
-                psu.channel_enable(channel=psu_ch)
+                psu.fine_control_enable()
 
                 # Open DMM for temperature and current readback
                 dmm = TempMonitor(
@@ -1220,7 +1214,7 @@ class CountRateCurrentTab(tk.Frame):
 
                     # --- Degauss ---
                     self._q.put(("status", "Degaussing…"))
-                    self._degauss(ads=dev, psu=psu, psu_channel=psu_ch, relay_ch=0)
+                    self._degauss(ads=dev, psu=psu, relay_ch=0)
 
                     for scan_idx in range(n_scans):
                         if not self._running: break
@@ -1233,7 +1227,7 @@ class CountRateCurrentTab(tk.Frame):
 
                             for cmd_current in currents:
                                 if not self._running: break
-                                psu.channel_set(channel=psu_ch, value=cmd_current, quantity="current")
+                                psu.fine_control_set(value=cmd_current)
 
                                 # ---- Settling phase with mid-point temp check ----
                                 if settle > 0:
@@ -1249,7 +1243,7 @@ class CountRateCurrentTab(tk.Frame):
                                         t_spike = dmm.temp_spike
                                         self._q.put(("temp_check", t_check))
                                         if t_check > TEMP_LIMIT_C and not t_spike:
-                                            self._emergency_stop(psu, psu_ch,
+                                            self._emergency_stop(psu,
                                                 f"TEMPERATURE LIMIT EXCEEDED: "
                                                 f"{t_check:.1f}°C > {TEMP_LIMIT_C}°C")
                                             return
@@ -1324,7 +1318,7 @@ class CountRateCurrentTab(tk.Frame):
                             # Full half-scan done
                             self._q.put(("scan_done", direction))
 
-                psu.channel_disable(channel=psu_ch)
+                psu.fine_control_disable()
 
         except Exception as e:
             self._q.put(("error", str(e)))
