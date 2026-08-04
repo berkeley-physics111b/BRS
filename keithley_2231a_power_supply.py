@@ -255,16 +255,16 @@ class Keithley2231A(object):
     def fine_control_set(self, value):
         """Using external board, increases precision of power supply output by combining output
         from two channels. Value is assumed to be in A."""
-        coarse_offset = round(value, 2) # value out to 10 mA (precision of channel)
-        fine_offset = round(value - coarse_offset, 6) # value after 10 mA (rounded to deal with floating point)
+        coarse_offset = self.current_to_voltage(round(value, 2))
+        fine_offset = round(value - round(value,2), 6) # value after 10 mA (rounded to deal with floating point)
         fine_offset_volt = self.current_to_voltage(fine_offset)
-        self.channel_set(channel=1, value=coarse_offset, quantity="current")
+        self.channel_set(channel=1, value=coarse_offset, quantity="voltage")
         self.channel_set(channel=2, value=12, quantity="voltage")
         self.channel_set(channel=3, value=fine_offset_volt, quantity="voltage")
 
     def fine_control_measure(self):
         """Read version of fine_control_set. Returns value in A."""
-        coarse_offset = self.channel_measure(channel=1, quantity="current")
+        coarse_offset = self.channel_measure(channel=1, quantity="voltage")
         fine_offset_volt = self.channel_measure(channel=3, quantity="voltage")
         fine_offset = self.voltage_to_current(fine_offset_volt)
         return coarse_offset + fine_offset
