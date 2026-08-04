@@ -40,9 +40,9 @@ class Keithley2231A(object):
 
     KNOWN_MODELS = ["2231A-30-3"]
 
-    ADJUSTABLE_CHANNELS = (1, 2)   # CH1 / CH2: settable voltage & current
+    ADJUSTABLE_CHANNELS = (1, 2, 3)   # CH1 / CH2: settable voltage & current
     FIXED_CHANNELS = (3,)          # CH3: fixed 5 V, output on/off only
-    ALL_CHANNELS = ADJUSTABLE_CHANNELS + FIXED_CHANNELS
+    ALL_CHANNELS = ADJUSTABLE_CHANNELS# + FIXED_CHANNELS
 
     QUANTITY_COMMANDS = {
         "voltage": "VOLT",
@@ -226,14 +226,16 @@ class Keithley2231A(object):
     # -- fine control via external board --------------------------------------
     
     def fine_control_enable(self):
-        """Enables two channels at once for BRS fine current control using external board."""
+        """Enables all channels at once for BRS fine current control using external board."""
         self.channel_enable(channel=1)
         self.channel_enable(channel=2)
+        self.channel_enable(channel=3)
 
     def fine_control_disable(self):
-        """Disables two channels at once for BRS fine current control using external board."""
+        """Disables all channels at once for BRS fine current control using external board."""
         self.channel_disable(channel=1)
         self.channel_disable(channel=2)
+        self.channel_disable(channel=3)
 
     def voltage_to_current(self, voltage):
         vmin = 0 # V
@@ -258,12 +260,13 @@ class Keithley2231A(object):
         fine_offset = round(value - coarse_offset, 6) # value after 10 mA (rounded to deal with floating point)
         fine_offset_volt = self.current_to_voltage(fine_offset)
         self.channel_set(channel=1, value=coarse_offset, quantity="current")
-        self.channel_set(channel=2, value=fine_offset_volt, quantity="voltage")
+        self.channel_set(channel=2, value=12, quantity="voltage")
+        self.channel_set(channel=3, value=fine_offset_volt, quantity="voltage")
 
     def fine_control_measure(self):
         """Read version of fine_control_set. Returns value in A."""
         coarse_offset = self.channel_measure(channel=1, quantity="current")
-        fine_offset_volt = self.channel_measure(channel=2, quantity="voltage")
+        fine_offset_volt = self.channel_measure(channel=3, quantity="voltage")
         fine_offset = self.voltage_to_current(fine_offset_volt)
         return coarse_offset + fine_offset
 
