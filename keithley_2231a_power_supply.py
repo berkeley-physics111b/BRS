@@ -54,6 +54,13 @@ class Keithley2231A(object):
         "power": "MEAS:POW?",
     }
 
+    FINE_TUNE_VMIN = 0.0
+    FINE_TUNE_VMAX = 2.0
+    FINE_TUNE_IMIN = 0.0
+    FINE_TUNE_IMAX = 0.01
+    FINE_TUNE_A = 1.0
+    FINE_TUNE_B = 0.0
+
     def __init__(self, visa_resource: str = None, baud_rate: int = 9600):
         """
         visa_resource: VISA resource string for the 2231A-001 USB/serial
@@ -238,20 +245,12 @@ class Keithley2231A(object):
         self.channel_disable(channel=3)
 
     def voltage_to_current(self, voltage):
-        vmin = 0 # V
-        vmax = 0.2 # V
-        imin = 0 # A
-        imax = 0.01 # A
-        slope = (imax - imin) / (vmax - vmin)
-        return round(slope * voltage, 6) # assuming resolution of ~uA post-board
+        slope = (self.FINE_TUNE_IMAX - self.FINE_TUNE_IMIN) / (self.FINE_TUNE_VMAX - self.FINE_TUNE_VMIN)
+        return round(self.FINE_TUNE_A * slope * voltage + self.FINE_TUNE_B, 6) # assuming resolution of ~uA post-board
 
     def current_to_voltage(self, current):
-        vmin = 0.0 # V
-        vmax = 0.2 # V
-        imin = 0 # A
-        imax = 0.01 # A
-        slope = (imax - imin) / (vmax - vmin)
-        return round(1/slope * current, 2) # resolution of 10 mV on Keithley
+        slope = (self.FINE_TUNE_IMAX - self.FINE_TUNE_IMIN) / (self.FINE_TUNE_VMAX - self.FINE_TUNE_VMIN)
+        return round(1/(self.FINE_TUNE_A * slope) * current + self.FINE_TUNE_B, 6) # resolution of 10 mV on Keithley
 
     def fine_control_set(self, value):
         """Using external board, increases precision of power supply output by combining output
